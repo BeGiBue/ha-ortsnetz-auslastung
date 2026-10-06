@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.0.0-beta.2 (Vorabversion)
+
+- Fix: Beim Herauszoomen verschwanden Punkte in dichten Gebieten. Die Cluster werden jetzt von der Card selbst aus allen Messpunkten berechnet, statt aus den geladenen Kartenkacheln gelesen zu werden.
+
 ## 2.0.0-beta.1 (Vorabversion)
 
 Zusammenführung von *Home-Assistant-Ortsnetz-Map* (Backend, zuletzt 1.1.0-beta.2) und *ortsnetz-map-card* (Card, zuletzt 1.0.3-beta.1) in einer Integration.
