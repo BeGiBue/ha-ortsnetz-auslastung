@@ -1,0 +1,30 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: GitHub-Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Release erstellen
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG existiert bereits (z. B. von Hand angelegt), nichts zu tun."
+            exit 0
+          fi
+          VERSION="${TAG#v}"
+          NOTES="RELEASE_NOTES_${VERSION}.md"
+          ARGS=(--title "$VERSION" --verify-tag)
+          if [ -f "$NOTES" ]; then ARGS+=(--notes-file "$NOTES"); else ARGS+=(--generate-notes); fi
+          if [[ "$VERSION" == *-* ]]; then ARGS+=(--prerelease); fi
+          gh release create "$TAG" "${ARGS[@]}"
