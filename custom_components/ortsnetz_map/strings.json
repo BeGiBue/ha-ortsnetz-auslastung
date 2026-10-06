@@ -1,0 +1,30 @@
+{
+  "title": "Ortsnetz Map",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Ortsnetz Map einrichten",
+        "description": "Richtet den serverseitigen Abruf der Messpunkte von ortsnetz-auslastung.de ein. Der Kartenmittelpunkt wird in der Karte automatisch aus dem Home-Assistant-Standort übernommen."
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Ortsnetz Map ist bereits eingerichtet."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Ortsnetz Map konfigurieren",
+        "description": "Legt fest, wie lange abgerufene Messpunkte zwischengespeichert werden und wie lange nach einem fehlgeschlagenen Abruf gewartet wird. Nach dem Speichern wird die Integration neu geladen.",
+        "data": {
+          "cache_max_age": "Cache-Dauer",
+          "retry_after_error": "Pause nach Fehler"
+        },
+        "data_description": {
+          "cache_max_age": "So lange werden Messpunkte ohne neuen Abruf ausgeliefert (60–3600 s, Standard 300 s).",
+          "retry_after_error": "So lange wird nach einem fehlgeschlagenen Abruf kein neuer Versuch gestartet; vorhandene Daten werden weiter ausgeliefert (30–600 s, Standard 60 s)."
+        }
+      }
+    }
+  }
+}
