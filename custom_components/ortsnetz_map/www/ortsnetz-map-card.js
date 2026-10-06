@@ -1,4 +1,4 @@
-// Ortsnetz Map Card v2.0.0-beta.1
+// Ortsnetz Map Card v2.0.0-beta.2
 const MAPLIBRE_VERSION = "5.7.1";
 const MAPLIBRE_JS = `https://unpkg.com/maplibre-gl@${MAPLIBRE_VERSION}/dist/maplibre-gl.js`;
 const MAPLIBRE_CSS = `https://unpkg.com/maplibre-gl@${MAPLIBRE_VERSION}/dist/maplibre-gl.css`;
@@ -7,6 +7,8 @@ const OPENFREEMAP_DARK_STYLE = "https://tiles.openfreemap.org/styles/dark";
 
 const SOURCE_ID = "ortsnetz-points";
 const LAYER_ID = "ortsnetz-points";
+// Ab diesem Zoom wird nicht mehr zusammengefasst.
+const CLUSTER_MAX_ZOOM = 12;
 const STALE_AFTER_MS = 20 * 60 * 1000;
 
 const HISTORY_GAP_MS = 12 * 60 * 1000; // größere Lücken unterbrechen die Linie
@@ -126,10 +128,8 @@ class OrtsnetzMapCard extends HTMLElement {
     this._clusterMarkers = new Map();
     this._maplibregl = null;
     this._onVisibilityChange = () => this._handleVisibility();
-    this._onMapSourceChange = (event) => {
-      if (event.sourceId === SOURCE_ID && event.isSourceLoaded) this._updateClusterMarkers();
-    };
-    this._onMapMoveEnd = () => this._updateClusterMarkers();
+    this._allFeatures = [];
+    this._onMapMoveEnd = () => this._updateClusters();
   }
 
   setConfig(config) {
@@ -296,7 +296,6 @@ class OrtsnetzMapCard extends HTMLElement {
         this._renderPoints(this._currentData);
       });
 
-      this._map.on("sourcedata", this._onMapSourceChange);
       this._map.on("moveend", this._onMapMoveEnd);
 
       const refreshSeconds = Math.max(60, Number(this._config.refresh_interval) || 300);
@@ -582,41 +581,96 @@ class OrtsnetzMapCard extends HTMLElement {
     return element;
   }
 
-  _updateClusterMarkers() {
-    if (!this._map || !this._maplibregl || !this._map.getSource(SOURCE_ID)) return;
-    if (!this._map.isSourceLoaded(SOURCE_ID)) return;
+  // Eigene Cluster-Berechnung auf allen Punkten (statt querySourceFeatures, das nur
+  // bereits geladene Kacheln kennt und dadurch Marker beim Herauszoomen verlieren kann).
+  _computeClusters() {
+    const map = this._map;
+    const radius = 45;
+    const features = this._allFeatures;
+    if (map.getZoom() >= CLUSTER_MAX_ZOOM + 1) return { clusters: [], singles: features };
 
-    const features = this._map.querySourceFeatures(SOURCE_ID, { filter: ["has", "point_count"] });
+    const cells = new Map();
+    const clusters = [];
+    for (const feature of features) {
+      const [lng, lat] = feature.geometry.coordinates;
+      const { x, y } = map.project([lng, lat]);
+      const cx = Math.floor(x / radius);
+      const cy = Math.floor(y / radius);
+
+      let target = null;
+      for (let dx = -1; dx <= 1 && !target; dx++) {
+        for (let dy = -1; dy <= 1 && !target; dy++) {
+          for (const cluster of cells.get(`${cx + dx}:${cy + dy}`) || []) {
+            if (Math.hypot(cluster.x - x, cluster.y - y) <= radius) { target = cluster; break; }
+          }
+        }
+      }
+      if (target) {
+        target.members.push(feature);
+        target.lng += lng;
+        target.lat += lat;
+      } else {
+        const cluster = { x, y, lng, lat, members: [feature] };
+        clusters.push(cluster);
+        const key = `${cx}:${cy}`;
+        if (!cells.has(key)) cells.set(key, []);
+        cells.get(key).push(cluster);
+      }
+    }
+
+    const singles = [];
+    const real = [];
+    for (const cluster of clusters) {
+      if (cluster.members.length === 1) singles.push(cluster.members[0]);
+      else real.push(cluster);
+    }
+    return { clusters: real, singles };
+  }
+
+  _updateClusters() {
+    if (!this._map || !this._maplibregl || !this._mapLoaded) return;
+    const source = this._map.getSource(SOURCE_ID);
+    if (!source) return;
+
+    const { clusters, singles } = this._computeClusters();
+    source.setData({ type: "FeatureCollection", features: singles });
+
+    // Marker nur für den sichtbaren Bereich (mit Rand) anlegen.
+    const bounds = this._map.getBounds();
+    const padLng = (bounds.getEast() - bounds.getWest()) * 0.15;
+    const padLat = (bounds.getNorth() - bounds.getSouth()) * 0.15;
     const seen = new Set();
 
-    for (const feature of features) {
-      const p = feature.properties || {};
-      const counts = {};
-      let total = 0;
-      for (const status of STATUSES) {
-        counts[status.key] = Number(p[`n_${status.key}`]) || 0;
-        total += counts[status.key];
-      }
-      if (!total) continue;
-      const id = `${p.cluster_id}:${STATUSES.map((s) => counts[s.key]).join(",")}`;
-      if (seen.has(id)) continue;
+    for (const cluster of clusters) {
+      const total = cluster.members.length;
+      const lng = cluster.lng / total;
+      const lat = cluster.lat / total;
+      if (
+        lng < bounds.getWest() - padLng || lng > bounds.getEast() + padLng ||
+        lat < bounds.getSouth() - padLat || lat > bounds.getNorth() + padLat
+      ) continue;
+
+      const counts = Object.fromEntries(STATUSES.map((s) => [s.key, 0]));
+      for (const member of cluster.members) counts[member.properties.status] += 1;
+      const id = `${lng.toFixed(5)}:${lat.toFixed(5)}:${STATUSES.map((s) => counts[s.key]).join(",")}`;
       seen.add(id);
       if (this._clusterMarkers.has(id)) continue;
 
       const element = this._clusterElement(counts, total);
-      const coordinates = feature.geometry.coordinates.slice();
-      const clusterId = p.cluster_id;
-      element.addEventListener("click", async (event) => {
+      element.addEventListener("click", (event) => {
         event.stopPropagation();
-        try {
-          const zoom = await this._map.getSource(SOURCE_ID).getClusterExpansionZoom(clusterId);
-          this._map.easeTo({ center: coordinates, zoom: zoom + 0.5 });
-        } catch (error) {
-          this._map.easeTo({ center: coordinates, zoom: this._map.getZoom() + 2 });
-        }
+        const box = new this._maplibregl.LngLatBounds();
+        for (const member of cluster.members) box.extend(member.geometry.coordinates);
+        const current = this._map.getZoom();
+        let camera = null;
+        try { camera = this._map.cameraForBounds(box, { padding: 60, maxZoom: 17 }); } catch (error) { /* ignore */ }
+        const zoom = Math.max(camera?.zoom ?? 0, current + 1.5);
+        this._map.easeTo({ center: camera?.center ?? [lng, lat], zoom: Math.min(zoom, 18) });
       });
-      const marker = new this._maplibregl.Marker({ element }).setLngLat(coordinates).addTo(this._map);
-      this._clusterMarkers.set(id, marker);
+      this._clusterMarkers.set(
+        id,
+        new this._maplibregl.Marker({ element }).setLngLat([lng, lat]).addTo(this._map)
+      );
     }
 
     for (const [id, marker] of this._clusterMarkers) {
@@ -801,7 +855,6 @@ class OrtsnetzMapCard extends HTMLElement {
         pv_forecast_kwh: point.pv_forecast_kwh ?? "",
         public_id: point.public_id ?? "",
       };
-      for (const s of STATUSES) properties[`n_${s.key}`] = s.key === status.key ? 1 : 0;
 
       features.push({
         type: "Feature",
@@ -810,30 +863,20 @@ class OrtsnetzMapCard extends HTMLElement {
       });
     }
 
-    const geojson = { type: "FeatureCollection", features };
-    const existingSource = this._map.getSource(SOURCE_ID);
-    if (existingSource) {
-      this._clearClusterMarkers();
-      existingSource.setData(geojson);
+    this._allFeatures = features;
+    if (this._map.getSource(SOURCE_ID)) {
+      this._updateClusters();
       return;
     }
 
-    const clusterProperties = {};
-    for (const s of STATUSES) clusterProperties[`n_${s.key}`] = ["+", ["get", `n_${s.key}`]];
-
     this._map.addSource(SOURCE_ID, {
       type: "geojson",
-      data: geojson,
-      cluster: true,
-      clusterRadius: 45,
-      clusterMaxZoom: 12,
-      clusterProperties,
+      data: { type: "FeatureCollection", features: [] },
     });
     this._map.addLayer({
       id: LAYER_ID,
       type: "circle",
       source: SOURCE_ID,
-      filter: ["!", ["has", "point_count"]],
       paint: {
         // Radius nach erwartetem PV-Ertrag (0–10 kWh/kWp/Tag), ohne Forecast 7 px.
         "circle-radius": [
@@ -849,6 +892,7 @@ class OrtsnetzMapCard extends HTMLElement {
         "circle-stroke-opacity": ["case", ["==", ["get", "stale"], true], 0.5, 1],
       },
     });
+    this._updateClusters();
   }
 
   _fmtV(value) {
