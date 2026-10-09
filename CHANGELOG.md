@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.0.0-beta.3 (Vorabversion)
 
 Behebt die Befunde aus zwei Code-Reviews.
 
