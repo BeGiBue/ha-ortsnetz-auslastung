@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 2.0.0
+
+Erste stabile Version der zusammengeführten Integration; entspricht 2.0.0-beta.3 mit folgenden Ergänzungen:
 
 - Doku: Cache-Dauer gilt auch für Zähler und Verläufe (README, Texte der Einstellungen); `refresh: true` ist für eigene Clients gedacht; `get_history` beantwortet nur Standorte aus der Punktliste.
 - CI: Tests laufen zusätzlich gegen die Mindestversion Home Assistant 2026.6; Testabhängigkeiten sind fest versioniert und werden per Dependabot aktualisiert; Actions auf Commit-SHAs festgelegt, nur Leserechte für Validate und Tests; der Release-Workflow prüft, dass Tag, `manifest.json`, `VERSION` und Card-Kopfzeile übereinstimmen.
