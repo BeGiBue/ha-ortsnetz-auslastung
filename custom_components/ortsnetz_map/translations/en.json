@@ -15,13 +15,13 @@
     "step": {
       "init": {
         "title": "Configure Ortsnetz Map",
-        "description": "Sets how long fetched map points are cached and how long to wait after a failed fetch. The integration reloads after saving.",
+        "description": "Sets how long fetched data (map points, 24-hour counters and site histories) is cached and how long to wait after a failed fetch. The integration reloads after saving.",
         "data": {
           "cache_max_age": "Cache duration",
           "retry_after_error": "Pause after error"
         },
         "data_description": {
-          "cache_max_age": "Map points are served without a new fetch for this long (60–3600 s, default 300 s).",
+          "cache_max_age": "Map points, counters and histories are served without a new fetch for this long (60–3600 s, default 300 s).",
           "retry_after_error": "No new attempt is made for this long after a failed fetch; existing data keeps being served (30–600 s, default 60 s)."
         }
       }

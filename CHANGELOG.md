@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Doku: Cache-Dauer gilt auch für Zähler und Verläufe (README, Texte der Einstellungen); `refresh: true` ist für eigene Clients gedacht; `get_history` beantwortet nur Standorte aus der Punktliste.
+
 ## 2.0.0-beta.3 (Vorabversion)
 
 Behebt die Befunde aus zwei Code-Reviews.

@@ -72,7 +72,7 @@ Unter **Einstellungen → Geräte & Dienste → Ortsnetz Map → Konfigurieren**
 
 | Einstellung | Bereich | Standard | Wirkung |
 |---|---|---|---|
-| Cache-Dauer | 60–3600 s | 300 s | So lange werden Daten ohne neuen Abruf ausgeliefert |
+| Cache-Dauer | 60–3600 s | 300 s | So lange werden Messpunkte, Zähler der letzten 24 Stunden und Verläufe ohne neuen Abruf ausgeliefert |
 | Pause nach Fehler | 30–600 s | 60 s | So lange wird nach einem fehlgeschlagenen Abruf kein neuer Versuch gestartet |
 
 Nach dem Speichern lädt die Integration automatisch neu.
@@ -94,8 +94,8 @@ Ortsnetz Map Card
 
 | Befehl | Wirkung |
 |---|---|
-| `ortsnetz_map/get_points` | Messpunkte; zusätzlich `threshold_stats` (Messungen der letzten 24 Stunden je Status), falls verfügbar. Optional `refresh: true` ruft nur neu ab, wenn der Cache mindestens 60 Sekunden alt ist. |
-| `ortsnetz_map/get_history` | 24-Stunden-Verlauf eines Standorts (`public_id`). Wird nur beim Öffnen eines Popups abgerufen und je Standort 5 Minuten zwischengespeichert. |
+| `ortsnetz_map/get_points` | Messpunkte; zusätzlich `threshold_stats` (Messungen der letzten 24 Stunden je Status), falls verfügbar. Optional `refresh: true` ruft nur neu ab, wenn der Cache mindestens 60 Sekunden alt ist; gedacht für eigene Clients, die mitgelieferte Card nutzt es nicht. |
+| `ortsnetz_map/get_history` | 24-Stunden-Verlauf eines Standorts (`public_id`). Wird nur beim Öffnen eines Popups abgerufen und je Standort für die eingestellte Cache-Dauer zwischengespeichert. Nur Standorte aus der aktuellen Punktliste; andere IDs erhalten den Fehler `not_found`. |
 
 ## Externe Bibliothek / Karte
 
