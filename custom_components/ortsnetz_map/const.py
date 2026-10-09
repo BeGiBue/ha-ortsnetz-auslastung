@@ -5,6 +5,9 @@ DOMAIN = "ortsnetz_map"
 # Dashboard-Card: wird von der Integration selbst ausgeliefert und im Frontend geladen.
 CARD_URL_PATH = "/ortsnetz_map/ortsnetz-map-card.js"
 DATA_CARD_REGISTERED = f"{DOMAIN}_card_registered"
+DATA_STATIC_PATHS_REGISTERED = f"{DOMAIN}_static_paths_registered"
+# MapLibre GL wird mit der Integration ausgeliefert (kein externes CDN).
+MAPLIBRE_URL_PATH = "/ortsnetz_map/maplibre"
 API_URL = "https://www.ortsnetz-auslastung.de/v1/map/points"
 # Zähler der letzten 24 Stunden je Spannungsstatus (für die Legende der Card).
 STATS_URL = "https://www.ortsnetz-auslastung.de/v1/map/threshold-stats?phase=overall"

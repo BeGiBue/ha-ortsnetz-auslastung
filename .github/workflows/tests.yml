@@ -17,3 +17,15 @@ jobs:
           python-version: "3.14"
       - run: pip install -r requirements_test.txt
       - run: python -m pytest -q
+
+  card:
+    name: Card (vitest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - run: npm ci
+      - run: npm test
+      - run: node --check custom_components/ortsnetz_map/www/ortsnetz-map-card.js

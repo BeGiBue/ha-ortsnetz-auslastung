@@ -1,13 +1,15 @@
 // Ortsnetz Map Card v2.0.0-beta.2
+// MapLibre GL wird von der Integration selbst ausgeliefert (kein externes CDN).
 const MAPLIBRE_VERSION = "5.7.1";
-const MAPLIBRE_JS = `https://unpkg.com/maplibre-gl@${MAPLIBRE_VERSION}/dist/maplibre-gl.js`;
-const MAPLIBRE_CSS = `https://unpkg.com/maplibre-gl@${MAPLIBRE_VERSION}/dist/maplibre-gl.css`;
+const MAPLIBRE_BASE = "/ortsnetz_map/maplibre";
+const MAPLIBRE_JS = `${MAPLIBRE_BASE}/maplibre-gl.js?v=${MAPLIBRE_VERSION}`;
+const MAPLIBRE_CSS = `${MAPLIBRE_BASE}/maplibre-gl.css?v=${MAPLIBRE_VERSION}`;
 const OPENFREEMAP_LIGHT_STYLE = "https://tiles.openfreemap.org/styles/liberty";
 const OPENFREEMAP_DARK_STYLE = "https://tiles.openfreemap.org/styles/dark";
 
 const SOURCE_ID = "ortsnetz-points";
 const LAYER_ID = "ortsnetz-points";
-// Ab diesem Zoom wird nicht mehr zusammengefasst.
+// Ab diesem Zoom wird nicht mehr zusammengefasst (Einzelpunkte ab Zoom 12).
 const CLUSTER_MAX_ZOOM = 12;
 const STALE_AFTER_MS = 20 * 60 * 1000;
 
@@ -59,25 +61,54 @@ function loadMapLibre() {
       document.head.appendChild(link);
     }
 
+    const fail = (script) => {
+      // Fehlgeschlagenes Laden nicht zwischenspeichern, damit ein späterer Versuch neu lädt.
+      mapLibrePromise = undefined;
+      script?.remove();
+      reject(new Error("MapLibre konnte nicht geladen werden"));
+    };
+    const done = () => {
+      if (!window.maplibregl) return fail(null);
+      // Danach genügt die Prüfung auf window.maplibregl.
+      mapLibrePromise = undefined;
+      resolve(window.maplibregl);
+    };
+
     const existing = document.querySelector(`script[src="${MAPLIBRE_JS}"]`);
     if (existing) {
       if (window.maplibregl) {
         resolve(window.maplibregl);
       } else {
-        existing.addEventListener("load", () => resolve(window.maplibregl), { once: true });
-        existing.addEventListener("error", reject, { once: true });
+        existing.addEventListener("load", done, { once: true });
+        existing.addEventListener("error", () => fail(existing), { once: true });
       }
       return;
     }
 
     const script = document.createElement("script");
     script.src = MAPLIBRE_JS;
-    script.onload = () => resolve(window.maplibregl);
-    script.onerror = reject;
+    script.onload = done;
+    script.onerror = () => fail(script);
     document.head.appendChild(script);
   });
 
   return mapLibrePromise;
+}
+
+// Text für innerHTML/setHTML: API-Werte dürfen kein HTML einschleusen.
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+// Nur einfache Farbwerte der API übernehmen (Hex, rgb/rgba, hsl/hsla), sonst null.
+const COLOR_PATTERN = /^(#[0-9a-f]{3,8}|(rgb|rgba|hsl|hsla)\(\s*[0-9.,%\s/]+\))$/i;
+function safeColor(value) {
+  return typeof value === "string" && COLOR_PATTERN.test(value.trim()) ? value.trim() : null;
 }
 
 function clamp(value, min, max, fallback) {
@@ -98,13 +129,48 @@ function toVoltage(value) {
   return number !== null && number > 0 ? number : null;
 }
 
-// Erwarteter spezifischer PV-Ertrag in kWh/kWp/Tag (null ohne Forecast), für die Markergröße auf 0–10 begrenzt.
-function forecastYield(point) {
+// Erwarteter spezifischer PV-Ertrag in kWh/kWp/Tag (null ohne Forecast).
+function forecastValue(point) {
   for (const key of ["forecast_kwh_per_kwp_day", "forecast_yield"]) {
     const number = toNumber(point[key]);
-    if (number !== null && number >= 0) return Math.min(10, number);
+    if (number !== null && number >= 0) return number;
   }
   return null;
+}
+
+// Für die Markergröße auf 0–10 begrenzt.
+function forecastYield(point) {
+  const value = forecastValue(point);
+  return value === null ? null : Math.min(10, value);
+}
+
+function isStaleFlag(value) {
+  return value === true || value === "true";
+}
+
+// Für setStyle: eigene Quelle und Ebene aus dem alten in den neuen Stil übernehmen.
+function keepOwnLayer(previous, next) {
+  const source = previous?.sources?.[SOURCE_ID];
+  const layer = previous?.layers?.find((item) => item.id === LAYER_ID);
+  if (!source || !layer) return next;
+  return {
+    ...next,
+    sources: { ...next.sources, [SOURCE_ID]: source },
+    layers: [...next.layers.filter((item) => item.id !== LAYER_ID), layer],
+  };
+}
+
+// Statustext je Fehlerursache des WebSocket-Befehls.
+function loadErrorText(error) {
+  switch (error?.code) {
+    case "no_data":
+      return "Keine Daten von ortsnetz-auslastung.de – später erneut versuchen";
+    case "not_loaded":
+    case "unknown_command":
+      return "Integration Ortsnetz Map nicht eingerichtet";
+    default:
+      return "Backend nicht erreichbar – Integration prüfen";
+  }
 }
 
 class OrtsnetzMapCard extends HTMLElement {
@@ -130,6 +196,9 @@ class OrtsnetzMapCard extends HTMLElement {
     this._onVisibilityChange = () => this._handleVisibility();
     this._allFeatures = [];
     this._onMapMoveEnd = () => this._updateClusters();
+    // Erhöht sich bei jedem Auf- und Abbau; veraltete async-Schritte brechen damit ab.
+    this._generation = 0;
+    this._loadRequest = 0;
   }
 
   setConfig(config) {
@@ -171,6 +240,7 @@ class OrtsnetzMapCard extends HTMLElement {
   }
 
   _destroy(clearMarkup = true) {
+    this._generation += 1;
     if (this._refreshTimer) {
       clearInterval(this._refreshTimer);
       this._refreshTimer = null;
@@ -201,6 +271,7 @@ class OrtsnetzMapCard extends HTMLElement {
   async _initialize() {
     if (this._initialized || this._map || !this._hass) return;
     this._initialized = true;
+    const generation = ++this._generation;
 
     this.innerHTML = `
       <ha-card>
@@ -269,6 +340,8 @@ class OrtsnetzMapCard extends HTMLElement {
 
     try {
       const maplibregl = await loadMapLibre();
+      // Während des Ladens entfernt oder neu aufgebaut: dieser Aufbau ist überholt.
+      if (generation !== this._generation || !this.isConnected) return;
       this._maplibregl = maplibregl;
       const latitude = Number(this._config.latitude ?? this._hass.config.latitude);
       const longitude = Number(this._config.longitude ?? this._hass.config.longitude);
@@ -309,7 +382,8 @@ class OrtsnetzMapCard extends HTMLElement {
       this._resizeObserver.observe(this._mapElement);
       setTimeout(() => this._map?.resize(), 250);
     } catch (error) {
-      this._setStatus(`Fehler: ${error.message || error}`);
+      if (generation !== this._generation) return;
+      this._setStatus(`Fehler: ${error?.message || error}`);
       console.error("Ortsnetz Map initialization failed", error);
     }
   }
@@ -359,7 +433,7 @@ class OrtsnetzMapCard extends HTMLElement {
   }
 
   _isStale(point) {
-    if (point.stale !== undefined && point.stale !== null) return Boolean(point.stale);
+    if (point.stale !== undefined && point.stale !== null) return isStaleFlag(point.stale);
     const time = Date.parse(point.observed_at);
     return Number.isFinite(time) && Date.now() - time > STALE_AFTER_MS;
   }
@@ -392,14 +466,15 @@ class OrtsnetzMapCard extends HTMLElement {
       return `<div class="popup-phase">${label}: <span class="popup-muted">nicht gemessen</span></div>`;
     }
     const status = this._phaseStatus(voltage);
-    return `<div class="popup-phase"><span class="popup-dot" style="background:${this._color(status.key)}"></span>${label}: <span class="popup-value">${voltage.toFixed(1)} V</span></div>`;
+    return `<div class="popup-phase"><span class="popup-dot" style="background:${escapeHtml(this._color(status.key))}"></span>${label}: <span class="popup-value">${voltage.toFixed(1)} V</span></div>`;
   }
 
   _popupHtml(p) {
     const frequency = toNumber(p.grid_frequency_hz);
     const yieldValue = toNumber(p.forecast_kwh_per_kwp_day);
     const forecastKwh = toNumber(p.pv_forecast_kwh);
-    const stale = p.stale === true || p.stale === "true";
+    const sampleCount = toNumber(p.sample_count);
+    const stale = isStaleFlag(p.stale);
     return `
       <div>
         <div class="popup-title">Ortsnetz-Messpunkt</div>
@@ -409,10 +484,10 @@ class OrtsnetzMapCard extends HTMLElement {
         <div style="margin-top:8px">
           Frequenz: <span class="popup-value">${frequency !== null ? frequency.toFixed(2) + " Hz" : "–"}</span><br>
           ${yieldValue !== null ? `PV-Forecast: <span class="popup-value">${forecastKwh !== null ? forecastKwh.toFixed(1) + " kWh · " : ""}${yieldValue.toFixed(2)} kWh/kWp/Tag</span><br>` : ""}
-          Messungen: <span class="popup-value">${p.sample_count || "–"}</span>
+          Messungen: <span class="popup-value">${sampleCount !== null ? Math.round(sampleCount) : "–"}</span>
         </div>
         ${stale ? '<div class="popup-warning">⚠️ Messwert möglicherweise veraltet</div>' : ""}
-        <div class="popup-time">Letzte Messung: ${this._formatDate(p.observed_at)}</div>
+        <div class="popup-time">Letzte Messung: ${escapeHtml(this._formatDate(p.observed_at))}</div>
         ${p.public_id ? '<div class="popup-charts"><span class="popup-muted">Verlauf wird geladen …</span></div>' : ""}
       </div>`;
   }
@@ -559,7 +634,7 @@ class OrtsnetzMapCard extends HTMLElement {
     const parts = STATUSES.map((s) => ({ color: this._color(s.key), n: counts[s.key] || 0 })).filter((p) => p.n > 0);
     let shapes = "";
     if (parts.length <= 1) {
-      shapes = `<circle cx="${r}" cy="${r}" r="${r}" fill="${parts[0]?.color || this._color("normal")}"/>`;
+      shapes = `<circle cx="${r}" cy="${r}" r="${r}" fill="${escapeHtml(parts[0]?.color || this._color("normal"))}"/>`;
     } else {
       let angle = -Math.PI / 2;
       for (const part of parts) {
@@ -569,7 +644,7 @@ class OrtsnetzMapCard extends HTMLElement {
         const x2 = r + r * Math.cos(next);
         const y2 = r + r * Math.sin(next);
         const large = next - angle > Math.PI ? 1 : 0;
-        shapes += `<path d="M${r} ${r} L${x1.toFixed(2)} ${y1.toFixed(2)} A${r} ${r} 0 ${large} 1 ${x2.toFixed(2)} ${y2.toFixed(2)} Z" fill="${part.color}"/>`;
+        shapes += `<path d="M${r} ${r} L${x1.toFixed(2)} ${y1.toFixed(2)} A${r} ${r} 0 ${large} 1 ${x2.toFixed(2)} ${y2.toFixed(2)} Z" fill="${escapeHtml(part.color)}"/>`;
         angle = next;
       }
     }
@@ -587,7 +662,7 @@ class OrtsnetzMapCard extends HTMLElement {
     const map = this._map;
     const radius = 45;
     const features = this._allFeatures;
-    if (map.getZoom() >= CLUSTER_MAX_ZOOM + 1) return { clusters: [], singles: features };
+    if (map.getZoom() >= CLUSTER_MAX_ZOOM) return { clusters: [], singles: features };
 
     const cells = new Map();
     const clusters = [];
@@ -652,7 +727,8 @@ class OrtsnetzMapCard extends HTMLElement {
 
       const counts = Object.fromEntries(STATUSES.map((s) => [s.key, 0]));
       for (const member of cluster.members) counts[member.properties.status] += 1;
-      const id = `${lng.toFixed(5)}:${lat.toFixed(5)}:${STATUSES.map((s) => counts[s.key]).join(",")}`;
+      // Farben gehören zur Kennung, damit geänderte API-Farben die Marker neu zeichnen.
+      const id = `${lng.toFixed(5)}:${lat.toFixed(5)}:${STATUSES.map((s) => `${counts[s.key]}${this._color(s.key)}`).join(",")}`;
       seen.add(id);
       if (this._clusterMarkers.has(id)) continue;
 
@@ -739,7 +815,7 @@ class OrtsnetzMapCard extends HTMLElement {
         for (const s of rows) {
           const on = this._enabled.has(s.key);
           body += `<label class="legend-row ${on ? "" : "off"}">
-            <span class="legend-dot" style="background:${this._color(s.key)}"></span>
+            <span class="legend-dot" style="background:${escapeHtml(this._color(s.key))}"></span>
             <span class="legend-text">${s.label}</span>
             <span class="legend-count">${counts[s.key]}</span>
             <input type="checkbox" data-status="${s.key}" ${on ? "checked" : ""}>
@@ -790,7 +866,12 @@ class OrtsnetzMapCard extends HTMLElement {
     const dark = this._isDarkTheme();
     if (dark === this._lastThemeDark) return;
     this._lastThemeDark = dark;
-    this._map.setStyle(dark ? OPENFREEMAP_DARK_STYLE : OPENFREEMAP_LIGHT_STYLE);
+    // Eigene Quelle und Ebene in den neuen Stil übernehmen; ohne transformStyle
+    // entfernt MapLibre sie beim Stil-Diff und die Einzelpunkte verschwinden.
+    this._map.setStyle(dark ? OPENFREEMAP_DARK_STYLE : OPENFREEMAP_LIGHT_STYLE, {
+      transformStyle: keepOwnLayer,
+    });
+    this._map.once("idle", () => this._renderPoints(this._currentData));
   }
 
   // ---- Daten ---------------------------------------------------------------
@@ -798,9 +879,13 @@ class OrtsnetzMapCard extends HTMLElement {
   async _loadMeasurements() {
     if (!this._hass?.connection) return;
     this._setStatus("Lade Messwerte …");
+    // Nur die zuletzt gestartete Anfrage darf die Anzeige ändern.
+    const request = ++this._loadRequest;
+    const generation = this._generation;
 
     try {
       const data = await this._hass.connection.sendMessagePromise({ type: "ortsnetz_map/get_points" });
+      if (request !== this._loadRequest || generation !== this._generation) return;
       this._lastLoad = Date.now();
       this._currentData = data;
       this._applyScale(data);
@@ -809,30 +894,34 @@ class OrtsnetzMapCard extends HTMLElement {
       const time = new Date().toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
       this._setStatus(`${data.points?.length ?? 0} Messpunkte · ${time}`);
     } catch (error) {
+      if (request !== this._loadRequest || generation !== this._generation) return;
       console.error("Could not load Ortsnetz points", error);
-      this._setStatus("Backend nicht erreichbar – Integration prüfen");
+      this._setStatus(loadErrorText(error));
     }
   }
 
   _applyScale(data) {
     // Schwellwerte und Farben kommen von der API (Farben: unter 207, 207–218, normal, 242–253, über 253).
-    const colors = data.scale?.colors;
-    if (Array.isArray(colors) && colors.length === 5 && colors.every((c) => typeof c === "string")) {
-      STATUSES.forEach((status, index) => { this._colors[status.key] = colors[index]; });
+    // Ungültige Farben (kein einfacher Farbwert) werden durch die Standardfarbe ersetzt.
+    const colors = data?.scale?.colors;
+    if (Array.isArray(colors) && colors.length === 5) {
+      STATUSES.forEach((status, index) => {
+        this._colors[status.key] = safeColor(colors[index]) ?? status.color;
+      });
     }
-    this._scale = { ...DEFAULT_SCALE, ...(data.scale ? {
-      criticalLow: data.scale.criticalLow ?? DEFAULT_SCALE.criticalLow,
-      warningLow: data.scale.warningLow ?? DEFAULT_SCALE.warningLow,
-      warningHigh: data.scale.warningHigh ?? DEFAULT_SCALE.warningHigh,
-      criticalHigh: data.scale.criticalHigh ?? DEFAULT_SCALE.criticalHigh,
-    } : {}) };
+    const scale = data?.scale || {};
+    const threshold = (key) => toNumber(scale[key]) ?? DEFAULT_SCALE[key];
+    this._scale = {
+      criticalLow: threshold("criticalLow"),
+      warningLow: threshold("warningLow"),
+      warningHigh: threshold("warningHigh"),
+      criticalHigh: threshold("criticalHigh"),
+    };
   }
 
   _renderPoints(data) {
     if (!this._map || !this._mapLoaded || !Array.isArray(data?.points)) return;
     if (!this._map.isStyleLoaded()) return;
-
-    this._applyScale(data);
 
     const features = [];
     for (const point of data.points) {
@@ -851,7 +940,8 @@ class OrtsnetzMapCard extends HTMLElement {
         sample_count: point.sample_count ?? "",
         observed_at: point.observed_at ?? "",
         forecast_yield: forecastYield(point) ?? "",
-        forecast_kwh_per_kwp_day: point.forecast_kwh_per_kwp_day ?? "",
+        // Marker und Popup lesen den Forecast aus denselben Feldern.
+        forecast_kwh_per_kwp_day: forecastValue(point) ?? "",
         pv_forecast_kwh: point.pv_forecast_kwh ?? "",
         public_id: point.public_id ?? "",
       };
@@ -937,12 +1027,25 @@ class OrtsnetzMapCardEditor extends HTMLElement {
     this._hass = null;
   }
 
-  set hass(hass) { this._hass = hass; if (this.shadowRoot) this._render(); }
-  setConfig(config) { this._config = { ...DEFAULT_CONFIG, ...config }; this._render(); }
+  // Nur beim ersten hass neu zeichnen: hass ändert sich mehrmals pro Sekunde und
+  // ein Neuaufbau würde laufende Eingaben verwerfen.
+  set hass(hass) {
+    const first = !this._hass;
+    this._hass = hass;
+    if (first) this._render();
+  }
+
+  setConfig(config) {
+    const next = { ...DEFAULT_CONFIG, ...config };
+    const changed = JSON.stringify(next) !== JSON.stringify(this._config);
+    this._config = next;
+    if (changed || !this._rendered) this._render();
+  }
   _usesHaLocation() { return this._config.latitude == null || this._config.longitude == null; }
 
   _render() {
     if (!this.shadowRoot) return;
+    this._rendered = true;
     const useHaLocation = this._usesHaLocation();
     const lat = useHaLocation ? (this._hass?.config?.latitude ?? "") : this._config.latitude;
     const lon = useHaLocation ? (this._hass?.config?.longitude ?? "") : this._config.longitude;
@@ -970,14 +1073,14 @@ class OrtsnetzMapCardEditor extends HTMLElement {
         <div class="section">
           <div class="section-title">Darstellung</div>
           <div class="grid">
-            <label class="field">Zoom<input data-key="zoom" type="number" min="1" max="19" step="1" value="${this._config.zoom}"></label>
+            <label class="field">Zoom<input data-key="zoom" type="number" min="1" max="19" step="1" value="${escapeHtml(this._config.zoom)}"></label>
             <label class="field">Phase für Markerfarbe<select data-key="phase">
               <option value="auto" ${this._config.phase === "auto" ? "selected" : ""}>Alle Phasen (schlechtester Wert)</option>
               <option value="L1" ${this._config.phase === "L1" ? "selected" : ""}>L1</option>
               <option value="L2" ${this._config.phase === "L2" ? "selected" : ""}>L2</option>
               <option value="L3" ${this._config.phase === "L3" ? "selected" : ""}>L3</option>
             </select></label>
-            <label class="field">Aktualisierung<div class="value-row"><input data-key="refresh_interval" type="number" min="60" max="3600" step="60" value="${this._config.refresh_interval}"><span class="unit">s</span></div></label>
+            <label class="field">Aktualisierung<div class="value-row"><input data-key="refresh_interval" type="number" min="60" max="3600" step="60" value="${escapeHtml(this._config.refresh_interval)}"><span class="unit">s</span></div></label>
           </div>
           <label class="check"><input data-key="show_status" type="checkbox" ${this._config.show_status !== false ? "checked" : ""}>Status unten links anzeigen</label>
           <label class="check"><input data-key="show_legend" type="checkbox" ${this._config.show_legend !== false ? "checked" : ""}>Legende unten rechts anzeigen</label>
@@ -987,8 +1090,8 @@ class OrtsnetzMapCardEditor extends HTMLElement {
           <div class="section-title">Kartenmittelpunkt</div>
           <label class="check"><input data-key="use_ha_location" type="checkbox" ${useHaLocation ? "checked" : ""}>Home-Assistant-Standort verwenden</label>
           <div class="grid coords" ${useHaLocation ? "hidden" : ""}>
-            <label class="field">Breitengrad<input data-key="latitude" type="number" min="-90" max="90" step="0.000001" value="${lat}"></label>
-            <label class="field">Längengrad<input data-key="longitude" type="number" min="-180" max="180" step="0.000001" value="${lon}"></label>
+            <label class="field">Breitengrad<input data-key="latitude" type="number" min="-90" max="90" step="0.000001" value="${escapeHtml(lat)}"></label>
+            <label class="field">Längengrad<input data-key="longitude" type="number" min="-180" max="180" step="0.000001" value="${escapeHtml(lon)}"></label>
           </div>
           <div class="hint">Wenn aktiviert, folgt die Karte automatisch dem unter Einstellungen → System → Allgemein hinterlegten Home-Assistant-Standort.</div>
         </div>
