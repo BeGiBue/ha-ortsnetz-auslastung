@@ -12,7 +12,20 @@ jobs:
     name: GitHub-Release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Versionen prüfen
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          VERSION="${TAG#v}"
+          MANIFEST="$(jq -r .version custom_components/ortsnetz_map/manifest.json)"
+          FILE="$(tr -d '[:space:]' < VERSION)"
+          CARD="$(head -n 1 custom_components/ortsnetz_map/www/ortsnetz-map-card.js)"
+          FAILED=0
+          [ "$MANIFEST" = "$VERSION" ] || { echo "::error::manifest.json hat $MANIFEST, Tag ist $TAG"; FAILED=1; }
+          [ "$FILE" = "$VERSION" ] || { echo "::error::VERSION hat $FILE, Tag ist $TAG"; FAILED=1; }
+          [ "$CARD" = "// Ortsnetz Map Card v$VERSION" ] || { echo "::error::Card-Kopfzeile ist '$CARD', Tag ist $TAG"; FAILED=1; }
+          exit $FAILED
       - name: Release erstellen
         env:
           GH_TOKEN: ${{ github.token }}

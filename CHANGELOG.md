@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- CI: Tests laufen zusätzlich gegen die Mindestversion Home Assistant 2026.6; Testabhängigkeiten sind fest versioniert und werden per Dependabot aktualisiert; Actions auf Commit-SHAs festgelegt, nur Leserechte für Validate und Tests; der Release-Workflow prüft, dass Tag, `manifest.json`, `VERSION` und Card-Kopfzeile übereinstimmen.
+
 ## 2.0.0-beta.3 (Vorabversion)
 
 Behebt die Befunde aus zwei Code-Reviews.
