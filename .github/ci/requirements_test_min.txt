@@ -1,0 +1,3 @@
+# Mindestversion laut hacs.json (Home Assistant 2026.6.0).
+# Liegt bewusst außerhalb des Wurzelverzeichnisses, damit Dependabot sie nicht anhebt.
+pytest-homeassistant-custom-component==0.13.336
