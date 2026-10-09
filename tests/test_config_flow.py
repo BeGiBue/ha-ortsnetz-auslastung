@@ -70,7 +70,7 @@ async def test_options_apply_after_reload(
         result["flow_id"], {CONF_CACHE_MAX_AGE: 900, CONF_RETRY_AFTER_ERROR: 120}
     )
     await hass.async_block_till_done()
-    coordinator = hass.data[DOMAIN][config_entry.entry_id]
+    coordinator = config_entry.runtime_data
 
     aioclient_mock.get(API_URL, json=api_payload)
     await coordinator.async_get_data()
@@ -104,7 +104,7 @@ async def test_minimum_cache_age(
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    coordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator = entry.runtime_data
 
     aioclient_mock.get(API_URL, json=api_payload)
     await coordinator.async_get_data()

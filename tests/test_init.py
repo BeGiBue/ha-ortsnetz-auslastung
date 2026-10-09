@@ -16,7 +16,12 @@ from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClien
 from pytest_homeassistant_custom_component.typing import WebSocketGenerator
 
 from custom_components.ortsnetz_map import OrtsnetzDataCoordinator
-from custom_components.ortsnetz_map.const import API_URL, DOMAIN
+from custom_components.ortsnetz_map.const import API_URL, DOMAIN, STATS_URL
+
+
+def _calls(mock: AiohttpClientMocker, url: str) -> int:
+    """Count requests made to exactly this URL."""
+    return sum(1 for call in mock.mock_calls if str(call[1]) == url)
 
 
 async def _setup(hass: HomeAssistant, entry: MockConfigEntry) -> OrtsnetzDataCoordinator:
@@ -24,7 +29,7 @@ async def _setup(hass: HomeAssistant, entry: MockConfigEntry) -> OrtsnetzDataCoo
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     assert entry.state is ConfigEntryState.LOADED
-    return hass.data[DOMAIN][entry.entry_id]
+    return entry.runtime_data
 
 
 async def test_setup_does_not_fetch(
@@ -183,7 +188,7 @@ async def test_reload_and_unload(
     assert await hass.config_entries.async_unload(config_entry.entry_id)
     await hass.async_block_till_done()
     assert config_entry.state is ConfigEntryState.NOT_LOADED
-    assert DOMAIN not in hass.data
+    assert hass.config_entries.async_loaded_entries(DOMAIN) == []
     assert aioclient_mock.call_count == 0
 
 
@@ -209,6 +214,7 @@ async def test_ws_no_data(
 ) -> None:
     """The WebSocket command reports when no data could be fetched."""
     aioclient_mock.get(API_URL, status=500)
+    aioclient_mock.get(STATS_URL, status=500)
     await _setup(hass, config_entry)
     client = await hass_ws_client(hass)
 
@@ -229,6 +235,7 @@ async def test_ws_success_and_refresh(
 ) -> None:
     """The WebSocket command returns data and honours the refresh flag."""
     aioclient_mock.get(API_URL, json=api_payload)
+    aioclient_mock.get(STATS_URL, status=500)
     await _setup(hass, config_entry)
     client = await hass_ws_client(hass)
 
@@ -236,15 +243,15 @@ async def test_ws_success_and_refresh(
     msg = await client.receive_json()
     assert msg["success"]
     assert msg["result"] == api_payload
-    assert aioclient_mock.call_count == 1
+    assert _calls(aioclient_mock, API_URL) == 1
 
     await client.send_json_auto_id({"type": "ortsnetz_map/get_points", "refresh": True})
     msg = await client.receive_json()
     assert msg["success"]
-    assert aioclient_mock.call_count == 1
+    assert _calls(aioclient_mock, API_URL) == 1
 
     freezer.tick(timedelta(seconds=61))
     await client.send_json_auto_id({"type": "ortsnetz_map/get_points", "refresh": True})
     msg = await client.receive_json()
     assert msg["success"]
-    assert aioclient_mock.call_count == 2
+    assert _calls(aioclient_mock, API_URL) == 2

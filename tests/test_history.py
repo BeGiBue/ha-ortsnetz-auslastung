@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 
 from freezegun.api import FrozenDateTimeFactory
@@ -14,6 +15,7 @@ from pytest_homeassistant_custom_component.typing import WebSocketGenerator
 
 from custom_components.ortsnetz_map import OrtsnetzDataCoordinator
 from custom_components.ortsnetz_map.const import (
+    API_URL,
     DOMAIN,
     HISTORY_CACHE_MAX_ENTRIES,
     HISTORY_URL_TEMPLATE,
@@ -35,6 +37,11 @@ HISTORY_PAYLOAD = {
 }
 
 
+POINTS_PAYLOAD = {
+    "points": [{"latitude": 52.5, "longitude": 13.4, "l1_v": 231.2, "public_id": SITE}],
+}
+
+
 def _url(public_id: str = SITE) -> str:
     return HISTORY_URL_TEMPLATE.format(public_id=public_id)
 
@@ -48,7 +55,7 @@ async def _setup(hass: HomeAssistant, entry: MockConfigEntry) -> OrtsnetzDataCoo
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     assert entry.state is ConfigEntryState.LOADED
-    return hass.data[DOMAIN][entry.entry_id]
+    return entry.runtime_data
 
 
 async def test_history_is_cached_per_site(
@@ -128,7 +135,8 @@ async def test_ws_history(
     aioclient_mock: AiohttpClientMocker,
     hass_ws_client: WebSocketGenerator,
 ) -> None:
-    """The WebSocket command returns the history of a site."""
+    """The WebSocket command returns the history of a known site."""
+    aioclient_mock.get(API_URL, json=POINTS_PAYLOAD)
     aioclient_mock.get(_url(), json=HISTORY_PAYLOAD)
     await _setup(hass, config_entry)
     client = await hass_ws_client(hass)
@@ -172,3 +180,89 @@ async def test_ws_history_not_loaded(
 
     assert not msg["success"]
     assert msg["error"]["code"] == "not_loaded"
+
+
+async def test_ws_history_rejects_unknown_sites(
+    hass: HomeAssistant,
+    config_entry: MockConfigEntry,
+    aioclient_mock: AiohttpClientMocker,
+    hass_ws_client: WebSocketGenerator,
+) -> None:
+    """IDs that are not in the point list never reach the history endpoint."""
+    aioclient_mock.get(API_URL, json=POINTS_PAYLOAD)
+    await _setup(hass, config_entry)
+    client = await hass_ws_client(hass)
+
+    for index in range(HISTORY_CACHE_MAX_ENTRIES + 1):
+        await client.send_json_auto_id(
+            {"type": "ortsnetz_map/get_history", "public_id": f"aaaaaaaa{index:02d}"}
+        )
+        msg = await client.receive_json()
+        assert not msg["success"]
+        assert msg["error"]["code"] == "not_found"
+
+    # Die Punktliste wird einmal geladen, Verläufe werden nie abgefragt.
+    assert _calls(aioclient_mock, API_URL) == 1
+    assert aioclient_mock.call_count == 1
+
+
+async def test_ws_history_without_point_list(
+    hass: HomeAssistant,
+    config_entry: MockConfigEntry,
+    aioclient_mock: AiohttpClientMocker,
+    hass_ws_client: WebSocketGenerator,
+) -> None:
+    """If the point list cannot be loaded, no site is considered known."""
+    aioclient_mock.get(API_URL, status=500)
+    await _setup(hass, config_entry)
+    client = await hass_ws_client(hass)
+
+    await client.send_json_auto_id({"type": "ortsnetz_map/get_history", "public_id": SITE})
+    msg = await client.receive_json()
+
+    assert msg["error"]["code"] == "not_found"
+    assert _calls(aioclient_mock, _url()) == 0
+
+
+async def test_slow_site_does_not_block_cached_sites(
+    hass: HomeAssistant,
+    config_entry: MockConfigEntry,
+    aioclient_mock: AiohttpClientMocker,
+) -> None:
+    """A hanging history request does not delay other sites."""
+    other = "otherSite0001"
+    aioclient_mock.get(_url(other), json=HISTORY_PAYLOAD)
+    coordinator = await _setup(hass, config_entry)
+    assert await coordinator.async_get_history(other) == HISTORY_PAYLOAD
+
+    release = asyncio.Event()
+
+    async def _hang(method, url, data):
+        await release.wait()
+
+    aioclient_mock.get(_url(), side_effect=_hang)
+    slow = hass.async_create_task(coordinator.async_get_history(SITE))
+    await asyncio.sleep(0)
+
+    # Der Cache des anderen Standorts antwortet sofort, obwohl SITE noch hängt.
+    async with asyncio.timeout(1):
+        assert await coordinator.async_get_history(other) == HISTORY_PAYLOAD
+    assert not slow.done()
+
+    release.set()
+    await slow
+
+
+async def test_parallel_requests_for_one_site_fetch_once(
+    hass: HomeAssistant,
+    config_entry: MockConfigEntry,
+    aioclient_mock: AiohttpClientMocker,
+) -> None:
+    """Concurrent popups for the same site share a single fetch."""
+    aioclient_mock.get(_url(), json=HISTORY_PAYLOAD)
+    coordinator = await _setup(hass, config_entry)
+
+    results = await asyncio.gather(*(coordinator.async_get_history(SITE) for _ in range(5)))
+
+    assert all(result == HISTORY_PAYLOAD for result in results)
+    assert _calls(aioclient_mock, _url()) == 1

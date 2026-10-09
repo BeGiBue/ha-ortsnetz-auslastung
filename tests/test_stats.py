@@ -38,7 +38,7 @@ async def _setup(hass: HomeAssistant, entry: MockConfigEntry) -> OrtsnetzDataCoo
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     assert entry.state is ConfigEntryState.LOADED
-    return hass.data[DOMAIN][entry.entry_id]
+    return entry.runtime_data
 
 
 async def test_setup_does_not_fetch_stats(

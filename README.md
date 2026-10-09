@@ -99,10 +99,10 @@ Ortsnetz Map Card
 
 ## Externe Bibliothek / Karte
 
-- [MapLibre GL JS](https://maplibre.org/) 5.7.1, wird zur Laufzeit von `unpkg.com` geladen
+- [MapLibre GL JS](https://maplibre.org/) 5.7.1 (BSD-3-Clause, Lizenz in `custom_components/ortsnetz_map/www/maplibre/LICENSE.txt`), wird mit der Integration ausgeliefert und von Home Assistant bereitgestellt
 - [OpenFreeMap](https://openfreemap.org/)-Vektorkarten (Stile „Liberty“ und „Dark“) auf Basis von OpenStreetMap-Daten, geladen von `tiles.openfreemap.org`
 
-Der Browser muss `unpkg.com` und `tiles.openfreemap.org` erreichen können. Die Messdaten selbst laufen ausschließlich über Home Assistant.
+Der Browser muss `tiles.openfreemap.org` erreichen können; ein externes CDN für MapLibre ist nicht mehr nötig. Die Messdaten selbst laufen ausschließlich über Home Assistant.
 
 ## Voraussetzungen
 

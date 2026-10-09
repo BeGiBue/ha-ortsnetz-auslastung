@@ -26,11 +26,13 @@ from .const import (
     CONF_CACHE_MAX_AGE,
     CONF_RETRY_AFTER_ERROR,
     DATA_CARD_REGISTERED,
+    DATA_STATIC_PATHS_REGISTERED,
     DOMAIN,
     FORCED_REFRESH_MIN_AGE_SECONDS,
     HISTORY_CACHE_MAX_ENTRIES,
     HISTORY_ID_PATTERN,
     HISTORY_URL_TEMPLATE,
+    MAPLIBRE_URL_PATH,
     REQUEST_TIMEOUT_SECONDS,
     RETRY_AFTER_ERROR_SECONDS,
     STATS_URL,
@@ -40,9 +42,9 @@ _LOGGER = logging.getLogger(__name__)
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
-CARD_FILE = Path(__file__).parent / "www" / "ortsnetz-map-card.js"
-
-type OrtsnetzMapConfigEntry = ConfigEntry
+WWW_DIR = Path(__file__).parent / "www"
+CARD_FILE = WWW_DIR / "ortsnetz-map-card.js"
+MAPLIBRE_DIR = WWW_DIR / "maplibre"
 
 
 class OrtsnetzDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -52,7 +54,7 @@ class OrtsnetzDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     nur, wenn ein Client Daten anfragt und der Cache veraltet ist.
     """
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+    def __init__(self, hass: HomeAssistant, entry: OrtsnetzMapConfigEntry) -> None:
         """Initialize the coordinator."""
         super().__init__(
             hass,
@@ -76,14 +78,20 @@ class OrtsnetzDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._stats_attempt: float | None = None
         self._stats_failed = False
         # Verläufe einzelner Standorte: erst beim Öffnen eines Popups abgerufen.
-        self._history_lock = asyncio.Lock()
+        # Ein Lock je Standort, damit ein langsamer Standort die anderen nicht blockiert.
+        self._history_locks: dict[str, asyncio.Lock] = {}
         self._history: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        # public_ids der zuletzt geladenen Punktliste (nur diese sind abfragbar).
+        self._known_ids: frozenset[str] = frozenset()
+        self._known_ids_source: Any = None
 
     async def _fetch_json(self, url: str) -> Any:
         """Fetch a JSON document from the external API."""
         session = async_get_clientsession(self.hass)
-        async with asyncio.timeout(REQUEST_TIMEOUT_SECONDS):
-            response = await session.get(url, headers={"Accept": "application/json"})
+        async with (
+            asyncio.timeout(REQUEST_TIMEOUT_SECONDS),
+            session.get(url, headers={"Accept": "application/json"}) as response,
+        ):
             response.raise_for_status()
             return await response.json(content_type=None)
 
@@ -161,30 +169,63 @@ class OrtsnetzDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self._stats_failed = False
             return self._stats
 
+    async def async_is_known_site(self, public_id: str) -> bool:
+        """Return whether public_id belongs to a site in the current point list.
+
+        Nur Standorte aus der Punktliste dürfen einen Verlauf abrufen. Ist die
+        Liste noch nicht geladen, wird sie dafür geladen (mit Cache und
+        Fehlerpause wie bei einer Card-Anfrage).
+        """
+        data = self.data if self.data is not None else await self.async_get_data()
+        if data is None:
+            return False
+        if data is not self._known_ids_source:
+            self._known_ids = frozenset(
+                str(point["public_id"])
+                for point in data.get("points", [])
+                if isinstance(point, dict) and point.get("public_id") not in (None, "")
+            )
+            self._known_ids_source = data
+        return public_id in self._known_ids
+
+    def _cached_history(self, public_id: str, now: float) -> tuple[bool, dict[str, Any] | None]:
+        """Return (usable, data) for a cached history without waiting."""
+        entry = self._history.get(public_id)
+        if entry is None:
+            return False, None
+        fresh = entry["data"] is not None and now - entry["success"] < self._cache_max_age
+        cooling_down = entry["failed"] and now - entry["attempt"] < self._retry_after_error
+        if fresh or cooling_down:
+            self._history.move_to_end(public_id)
+            return True, entry["data"]
+        return False, None
+
     async def async_get_history(self, public_id: str) -> dict[str, Any] | None:
         """Return the 24-hour history of one site, cached per site.
 
-        Abgerufen wird nur auf Anfrage (Popup). Frische Einträge kommen aus dem
-        Cache, nach einem Fehler gilt dieselbe Pause wie bei den Kartenpunkten.
-        Es werden höchstens HISTORY_CACHE_MAX_ENTRIES Standorte gemerkt.
+        Abgerufen wird nur auf Anfrage (Popup). Frische Einträge kommen ohne
+        Wartezeit aus dem Cache; Abrufe sind je Standort serialisiert, sodass ein
+        langsamer Standort andere nicht aufhält. Nach einem Fehler gilt dieselbe
+        Pause wie bei den Kartenpunkten. Es werden höchstens
+        HISTORY_CACHE_MAX_ENTRIES Standorte gemerkt.
         """
-        async with self._history_lock:
-            now = monotonic()
-            entry = self._history.get(public_id)
-            if entry is not None:
-                fresh = (
-                    entry["data"] is not None
-                    and now - entry["success"] < self._cache_max_age
-                )
-                cooling_down = (
-                    entry["failed"] and now - entry["attempt"] < self._retry_after_error
-                )
-                if fresh or cooling_down:
-                    self._history.move_to_end(public_id)
-                    return entry["data"]
-            else:
-                entry = {"data": None, "success": 0.0, "attempt": 0.0, "failed": False}
+        usable, data = self._cached_history(public_id, monotonic())
+        if usable:
+            return data
 
+        lock = self._history_locks.setdefault(public_id, asyncio.Lock())
+        async with lock:
+            # Ein paralleler Aufruf kann den Eintrag inzwischen geladen haben.
+            usable, data = self._cached_history(public_id, monotonic())
+            if usable:
+                return data
+
+            entry = self._history.get(public_id) or {
+                "data": None,
+                "success": 0.0,
+                "attempt": 0.0,
+                "failed": False,
+            }
             entry["attempt"] = monotonic()
             try:
                 data = await self._fetch_json(
@@ -203,8 +244,20 @@ class OrtsnetzDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._history[public_id] = entry
             self._history.move_to_end(public_id)
             while len(self._history) > HISTORY_CACHE_MAX_ENTRIES:
-                self._history.popitem(last=False)
+                evicted, _ = self._history.popitem(last=False)
+                evicted_lock = self._history_locks.get(evicted)
+                if evicted_lock is not None and not evicted_lock.locked():
+                    del self._history_locks[evicted]
             return entry["data"]
+
+
+type OrtsnetzMapConfigEntry = ConfigEntry[OrtsnetzDataCoordinator]
+
+
+def _loaded_coordinator(hass: HomeAssistant) -> OrtsnetzDataCoordinator | None:
+    """Return the coordinator of the loaded config entry, if any."""
+    entries = hass.config_entries.async_loaded_entries(DOMAIN)
+    return entries[0].runtime_data if entries else None
 
 
 async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
@@ -215,50 +268,72 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
 
 
 async def _async_register_card(hass: HomeAssistant) -> None:
-    """Serve the dashboard card and load it in the frontend (once per start).
+    """Serve the dashboard card and MapLibre, and load the card in the frontend.
 
-    Fehler hier dürfen die Einrichtung nicht verhindern: Ohne Card funktionieren
-    Abruf und WebSocket-API weiter.
+    Die statischen Pfade werden einmal pro Start registriert, die Card wird bei
+    jeder Einrichtung (wieder) ins Frontend eingetragen. Fehler hier dürfen die
+    Einrichtung nicht verhindern: Ohne Card funktionieren Abruf und
+    WebSocket-API weiter.
     """
-    if hass.data.get(DATA_CARD_REGISTERED):
-        return
     if getattr(hass, "http", None) is None:
         _LOGGER.debug("HTTP server not available, dashboard card not registered")
         return
 
     try:
-        from homeassistant.components.frontend import add_extra_js_url  # noqa: PLC0415
-        from homeassistant.components.http import StaticPathConfig  # noqa: PLC0415
+        if not hass.data.get(DATA_STATIC_PATHS_REGISTERED):
+            from homeassistant.components.http import StaticPathConfig  # noqa: PLC0415
 
-        await hass.http.async_register_static_paths(
-            [StaticPathConfig(CARD_URL_PATH, str(CARD_FILE), False)]
-        )
-        integration = await async_get_integration(hass, DOMAIN)
-        # Die Version im Query-String verhindert, dass Browser eine alte Card behalten.
-        add_extra_js_url(hass, f"{CARD_URL_PATH}?v={integration.version}")
+            await hass.http.async_register_static_paths(
+                [
+                    StaticPathConfig(CARD_URL_PATH, str(CARD_FILE), False),
+                    StaticPathConfig(MAPLIBRE_URL_PATH, str(MAPLIBRE_DIR), True),
+                ]
+            )
+            hass.data[DATA_STATIC_PATHS_REGISTERED] = True
+
+        if hass.data.get(DATA_CARD_REGISTERED):
+            return
+        from homeassistant.components.frontend import add_extra_js_url  # noqa: PLC0415
+
+        url = await _async_card_url(hass)
+        add_extra_js_url(hass, url)
     except Exception:  # noqa: BLE001
         _LOGGER.warning("Could not register the Ortsnetz Map dashboard card", exc_info=True)
         return
 
-    hass.data[DATA_CARD_REGISTERED] = True
+    hass.data[DATA_CARD_REGISTERED] = url
+
+
+async def _async_card_url(hass: HomeAssistant) -> str:
+    """Return the card URL; the version keeps browsers from using an old card."""
+    integration = await async_get_integration(hass, DOMAIN)
+    return f"{CARD_URL_PATH}?v={integration.version}"
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: OrtsnetzMapConfigEntry) -> bool:
     """Set up Ortsnetz Map from a config entry."""
     await _async_register_card(hass)
     # Bewusst kein Abruf beim Start: Daten werden erst bei der ersten Card-Anfrage geladen.
-    coordinator = OrtsnetzDataCoordinator(hass, entry)
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
+    entry.runtime_data = OrtsnetzDataCoordinator(hass, entry)
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: OrtsnetzMapConfigEntry) -> bool:
     """Unload a config entry."""
-    domain_data = hass.data.get(DOMAIN, {})
-    domain_data.pop(entry.entry_id, None)
-    if not domain_data:
-        hass.data.pop(DOMAIN, None)
     return True
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: OrtsnetzMapConfigEntry) -> None:
+    """Stop loading the card in the frontend once the integration is removed."""
+    url = hass.data.pop(DATA_CARD_REGISTERED, None)
+    if not url:
+        return
+    try:
+        from homeassistant.components.frontend import remove_extra_js_url  # noqa: PLC0415
+
+        remove_extra_js_url(hass, url)
+    except Exception:  # noqa: BLE001
+        _LOGGER.debug("Could not unregister the Ortsnetz Map dashboard card", exc_info=True)
 
 
 @websocket_api.websocket_command(
@@ -274,12 +349,11 @@ async def ws_get_points(
     msg: dict[str, Any],
 ) -> None:
     """Return cached Ortsnetz map data to an authenticated frontend client."""
-    coordinators = hass.data.get(DOMAIN, {})
-    if not coordinators:
+    coordinator = _loaded_coordinator(hass)
+    if coordinator is None:
         connection.send_error(msg["id"], "not_loaded", "Ortsnetz Map backend is not configured")
         return
 
-    coordinator: OrtsnetzDataCoordinator = next(iter(coordinators.values()))
     data, stats = await asyncio.gather(
         coordinator.async_get_data(force=msg["refresh"]),
         coordinator.async_get_threshold_stats(force=msg["refresh"]),
@@ -307,12 +381,17 @@ async def ws_get_history(
     msg: dict[str, Any],
 ) -> None:
     """Return the cached 24-hour history of one site to an authenticated client."""
-    coordinators = hass.data.get(DOMAIN, {})
-    if not coordinators:
+    coordinator = _loaded_coordinator(hass)
+    if coordinator is None:
         connection.send_error(msg["id"], "not_loaded", "Ortsnetz Map backend is not configured")
         return
 
-    coordinator: OrtsnetzDataCoordinator = next(iter(coordinators.values()))
+    # Nur Standorte aus der Punktliste: beliebige IDs würden sonst jeweils einen
+    # externen Abruf auslösen und den Cache verdrängen.
+    if not await coordinator.async_is_known_site(msg["public_id"]):
+        connection.send_error(msg["id"], "not_found", "Unknown Ortsnetz site")
+        return
+
     data = await coordinator.async_get_history(msg["public_id"])
 
     if data is None:

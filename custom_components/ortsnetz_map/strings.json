@@ -3,26 +3,26 @@
   "config": {
     "step": {
       "user": {
-        "title": "Ortsnetz Map einrichten",
-        "description": "Richtet den serverseitigen Abruf der Messpunkte von ortsnetz-auslastung.de ein. Der Kartenmittelpunkt wird in der Karte automatisch aus dem Home-Assistant-Standort übernommen."
+        "title": "Set up Ortsnetz Map",
+        "description": "Sets up server-side retrieval of map points from ortsnetz-auslastung.de. The map automatically uses the Home Assistant location as its center."
       }
     },
     "abort": {
-      "single_instance_allowed": "Ortsnetz Map ist bereits eingerichtet."
+      "single_instance_allowed": "Ortsnetz Map is already configured."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Ortsnetz Map konfigurieren",
-        "description": "Legt fest, wie lange abgerufene Messpunkte zwischengespeichert werden und wie lange nach einem fehlgeschlagenen Abruf gewartet wird. Nach dem Speichern wird die Integration neu geladen.",
+        "title": "Configure Ortsnetz Map",
+        "description": "Sets how long fetched map points are cached and how long to wait after a failed fetch. The integration reloads after saving.",
         "data": {
-          "cache_max_age": "Cache-Dauer",
-          "retry_after_error": "Pause nach Fehler"
+          "cache_max_age": "Cache duration",
+          "retry_after_error": "Pause after error"
         },
         "data_description": {
-          "cache_max_age": "So lange werden Messpunkte ohne neuen Abruf ausgeliefert (60–3600 s, Standard 300 s).",
-          "retry_after_error": "So lange wird nach einem fehlgeschlagenen Abruf kein neuer Versuch gestartet; vorhandene Daten werden weiter ausgeliefert (30–600 s, Standard 60 s)."
+          "cache_max_age": "Map points are served without a new fetch for this long (60–3600 s, default 300 s).",
+          "retry_after_error": "No new attempt is made for this long after a failed fetch; existing data keeps being served (30–600 s, default 60 s)."
         }
       }
     }
