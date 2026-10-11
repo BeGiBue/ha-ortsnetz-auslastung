@@ -1,0 +1,264 @@
+// Testseite für die Card im echten Browser, vollständig ohne Netz:
+// - Card und MapLibre kommen aus dem Repository,
+// - die OpenFreeMap-Stile werden durch einen Minimalstil ersetzt,
+// - hass ist eine Attrappe mit deterministisch erzeugten Messpunkten.
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const WWW = path.join(ROOT, "custom_components/ortsnetz_map/www");
+export const ORIGIN = "http://ortsnetz.test";
+
+// Minimalstil ohne Kacheln. Mit glyphs (404) für den hellen, ohne für den dunklen Stil,
+// damit beide Pfade (Symbol-Layer möglich / nicht möglich) im Test vorkommen.
+const MINIMAL_STYLE = { version: 8, sources: {}, layers: [{ id: "bg", type: "background", paint: { "background-color": "#ddd" } }] };
+const STYLES = {
+  liberty: { ...MINIMAL_STYLE, glyphs: `${ORIGIN}/fonts/{fontstack}/{range}.pbf` },
+  dark: { ...MINIMAL_STYLE, layers: [{ id: "bg", type: "background", paint: { "background-color": "#333" } }] },
+};
+
+// 1×1-PNG für die langsamen Kacheln (Option tileDelay).
+const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGM4c+bMfwAIMANkhLK+mwAAAABJRU5ErkJggg==", "base64");
+
+function styleFor(name, tileDelay) {
+  const style = structuredClone(STYLES[name] ?? STYLES.liberty);
+  if (tileDelay) {
+    // Simuliert eine Basiskarte, deren Kacheln (wie im Netz) erst nach einer Weile kommen.
+    style.sources.raster = { type: "raster", tiles: [`${ORIGIN}/tiles/{z}/{x}/{y}.png`], tileSize: 256 };
+    style.layers.push({ id: "raster", type: "raster", source: "raster", paint: { "raster-opacity": 0.1 } });
+  }
+  return style;
+}
+
+// Deterministischer Zufall (mulberry32).
+function random(seed) {
+  return () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Ca. 700 Punkte: dichte Gebiete (Cluster), Streuung über Deutschland, einige
+// Punkte mit identischen Koordinaten; gemischte Status.
+export function makePoints(count = 700, seed = 42) {
+  const rnd = random(seed);
+  const gauss = () => Math.sqrt(-2 * Math.log(rnd() || 1e-9)) * Math.cos(2 * Math.PI * rnd());
+  const cities = [[52.52, 13.40], [48.14, 11.58], [50.94, 6.96], [53.55, 9.99], [51.34, 12.37], [49.45, 11.08]];
+  const voltages = [200, 212, 230, 230, 230, 230, 247, 258];
+  const points = [];
+  for (let i = 0; i < count; i++) {
+    let lat;
+    let lng;
+    if (i < 480) {
+      const [cLat, cLng] = cities[i % cities.length];
+      const spread = i % 4 === 0 ? 0.25 : 0.04;
+      lat = cLat + gauss() * spread;
+      lng = cLng + gauss() * spread * 1.6;
+    } else if (i < 690) {
+      lat = 47.4 + rnd() * 7.4;
+      lng = 6.0 + rnd() * 8.9;
+    } else {
+      // Gleiche Koordinaten wie ein früherer Punkt (Mehrfamilienhaus o. ä.).
+      lat = points[i - 690].latitude;
+      lng = points[i - 690].longitude;
+    }
+    const pick = () => voltages[Math.floor(rnd() * voltages.length)];
+    points.push({
+      public_id: `p${String(i).padStart(4, "0")}`,
+      latitude: Number(lat.toFixed(5)),
+      longitude: Number(lng.toFixed(5)),
+      l1_v: pick(),
+      l2_v: rnd() < 0.2 ? -1 : pick(),
+      l3_v: pick(),
+      grid_frequency_hz: 50,
+      sample_count: 5,
+      observed_at: new Date().toISOString(),
+      stale: rnd() < 0.1,
+      forecast_kwh_per_kwp_day: rnd() < 0.7 ? Number((rnd() * 8).toFixed(2)) : null,
+    });
+  }
+  return points;
+}
+
+const HARNESS_HTML = `<!doctype html>
+<html><head><meta charset="utf-8"><title>Ortsnetz Map Test</title>
+<style>html,body{margin:0;height:100%} #host{width:var(--w);height:var(--h)}</style>
+</head><body><div id="host"></div>
+<script>
+  window.matchMedia = window.matchMedia || (() => ({ matches: false }));
+  window.__setupCard = (config, points, size, options = {}) => {
+    const host = document.getElementById("host");
+    host.style.setProperty("--w", size.width + "px");
+    host.style.setProperty("--h", size.height + "px");
+    // Wie in Home Assistant (hui-card, Sections): die Card liegt in einem Shadow-Root,
+    // Stylesheets aus document.head wirken dort nicht.
+    const root = host.attachShadow({ mode: "open" });
+    const style = document.createElement("style");
+    style.textContent = ":host{display:block} ortsnetz-map-card{display:block;height:100%}";
+    root.appendChild(style);
+    const card = document.createElement("ortsnetz-map-card");
+    card.setConfig(config);
+    let release;
+    window.__dataReleased = options.holdData ? new Promise((resolve) => { release = resolve; }) : Promise.resolve();
+    window.__releaseData = () => release?.();
+    card.hass = {
+      config: { latitude: 51.0, longitude: 10.0 },
+      themes: { darkMode: false },
+      connection: {
+        sendMessagePromise: async (msg) => {
+          if (msg.type === "ortsnetz_map/get_points") await window.__dataReleased;
+          if (msg.type === "ortsnetz_map/get_points") return JSON.parse(JSON.stringify({ points: window.__points }));
+          throw { code: "not_found" };
+        },
+      },
+    };
+    window.__points = points;
+    root.appendChild(card);
+    window.__card = card;
+  };
+</script>
+<script src="/card.js"></script>
+</body></html>`;
+
+async function fulfillFile(route, file, contentType) {
+  route.fulfill({ status: 200, contentType, body: await readFile(file) });
+}
+
+export async function installRoutes(page, { tileDelay = 0 } = {}) {
+  await page.route("**/*", async (route) => {
+    const url = new URL(route.request().url());
+    // WebKit leitet auch blob:-URLs (MapLibre-Worker) durch page.route; nicht abbrechen.
+    if (url.protocol === "blob:" || url.protocol === "data:") return route.continue();
+    if (url.origin === ORIGIN) {
+      if (url.pathname === "/harness.html") return route.fulfill({ status: 200, contentType: "text/html", body: HARNESS_HTML });
+      if (url.pathname === "/card.js") return fulfillFile(route, path.join(WWW, "ortsnetz-map-card.js"), "text/javascript");
+      if (url.pathname.startsWith("/ortsnetz_map/maplibre/")) {
+        const name = path.basename(url.pathname);
+        const type = name.endsWith(".css") ? "text/css" : "text/javascript";
+        return fulfillFile(route, path.join(WWW, "maplibre", name), type);
+      }
+      if (url.pathname.startsWith("/tiles/")) {
+        await new Promise((resolve) => setTimeout(resolve, tileDelay));
+        return route.fulfill({ status: 200, contentType: "image/png", body: PNG }).catch(() => {});
+      }
+      return route.fulfill({ status: 404, body: "" });
+    }
+    if (url.hostname === "tiles.openfreemap.org" && url.pathname.startsWith("/styles/")) {
+      const style = styleFor(url.pathname.split("/").pop(), tileDelay);
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(style) });
+    }
+    return route.abort();
+  });
+}
+
+// Lädt die Testseite und wartet, bis die Karte Punkte zeigt.
+// Mit holdData wartet die hass-Attrappe auf window.__releaseData(), bevor sie die Punkte liefert.
+export async function openCard(page, { config = {}, points = makePoints(), size = { width: 900, height: 650 }, tileDelay = 0, holdData = false } = {}) {
+  await page.setViewportSize({ width: size.width + 40, height: size.height + 40 });
+  await installRoutes(page, { tileDelay });
+  await page.goto(`${ORIGIN}/harness.html`);
+  await page.evaluate(({ config, points, size, holdData }) => window.__setupCard(config, points, size, { holdData }), { config, points, size, holdData });
+  if (holdData) {
+    await page.waitForFunction(() => window.__card?._map?.loaded());
+    return points;
+  }
+  await page.waitForFunction(() => window.__card?._map && window.__card._currentData && window.__card._map.loaded());
+  await waitIdle(page);
+  return points;
+}
+
+// true, solange die Card noch die eigene Cluster-Berechnung (HTML-Marker, bis 2.0.0) nutzt.
+export async function usesOwnClusters(page) {
+  return page.evaluate(() => Boolean(window.__card._clusterMarkers) && !window.__card._map.getLayer("ortsnetz-clusters"));
+}
+
+// Wartet, bis die Karte nach einer Aktion zur Ruhe gekommen ist.
+export async function waitIdle(page) {
+  await page.evaluate(() => new Promise((resolve, reject) => {
+    const map = window.__card._map;
+    const timer = setTimeout(() => reject(new Error("Karte wird nicht idle")), 15000);
+    map.once("idle", () => { clearTimeout(timer); resolve(); });
+    map.triggerRepaint();
+  }));
+  // Ein Frame Puffer für Handler, die selbst auf idle/moveend reagieren.
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+}
+
+// Prüft im Browser: Jeder aktivierte Punkt im Blickfeld wird genau einmal
+// dargestellt, entweder als Einzelpunkt oder als Mitglied eines Clusters.
+// HTML-Marker zählen nur, wenn sie sichtbar an ihrer Kartenposition sitzen.
+// (Die Summe aus point_count und Einzelpunkten allein taugt an den Rändern nicht:
+// Cluster am Rand enthalten auch Punkte außerhalb des Blickfelds.)
+export async function representation(page) {
+  return page.evaluate(async () => {
+    const card = window.__card;
+    const map = card._map;
+    const canvas = map.getCanvas();
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    const margin = 3;
+
+    const expected = [];
+    for (const point of card._currentData.points) {
+      const status = card._pointStatus(point);
+      if (!status || !card._enabled.has(status.key)) continue;
+      const { x, y } = map.project([point.longitude, point.latitude]);
+      if (x >= margin && x <= width - margin && y >= margin && y <= height - margin) expected.push(point.public_id);
+    }
+
+    const singles = new Set();
+    const clustered = new Map(); // public_id -> Anzahl Cluster, die ihn enthalten
+    let clusterCount = 0;
+    let clusterPointSum = 0;
+
+    const add = (id) => clustered.set(id, (clustered.get(id) || 0) + 1);
+    const nativeClusters = map.getLayer("ortsnetz-clusters");
+    if (nativeClusters) {
+      const source = map.getSource("ortsnetz-points");
+      const seen = new Set();
+      for (const feature of map.queryRenderedFeatures({ layers: ["ortsnetz-clusters"] })) {
+        const id = feature.properties.cluster_id;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        clusterCount += 1;
+        clusterPointSum += feature.properties.point_count;
+        const leaves = await source.getClusterLeaves(id, Infinity, 0);
+        for (const leaf of leaves) add(leaf.properties.public_id);
+      }
+    } else {
+      const box = card.querySelector(".ortsnetz-map").getBoundingClientRect();
+      for (const marker of card._clusterMarkers.values()) {
+        const element = marker.getElement();
+        if (!element.isConnected) continue;
+        const rect = element.getBoundingClientRect();
+        const at = map.project(marker.getLngLat());
+        const dx = rect.left + rect.width / 2 - (box.left + at.x);
+        const dy = rect.top + rect.height / 2 - (box.top + at.y);
+        if (Math.hypot(dx, dy) > 3) continue; // nicht dort, wo er hingehört
+        const visible = rect.right > box.left && rect.left < box.right && rect.bottom > box.top && rect.top < box.bottom;
+        if (!visible) continue;
+        clusterCount += 1;
+        clusterPointSum += marker.ortsnetzIds.length;
+        for (const id of marker.ortsnetzIds) add(id);
+      }
+    }
+    for (const feature of map.queryRenderedFeatures({ layers: ["ortsnetz-points"] })) {
+      if (feature.properties.point_count === undefined) singles.add(feature.properties.public_id);
+    }
+
+    const missing = expected.filter((id) => !singles.has(id) && !clustered.has(id));
+    const doubled = expected.filter((id) => (singles.has(id) ? 1 : 0) + (clustered.get(id) || 0) > 1);
+    return {
+      zoom: Number(map.getZoom().toFixed(2)),
+      expected: expected.length,
+      singles: singles.size,
+      clusters: clusterCount,
+      clusterPointSum,
+      missing,
+      doubled,
+    };
+  });
+}
