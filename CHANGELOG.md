@@ -1,5 +1,17 @@
 # Changelog
 
+## Unveröffentlicht
+
+Test- und Diagnosegrundlage (Phase 0), keine Änderung am Verhalten der Karte:
+
+- Neue Option `debug: true` (Standard aus): Diagnosezeile oben links mit Zoom, gesetzten Punkten, Clustern und sichtbaren Einzelpunkten, z. B. für Screenshots vom iPad.
+- Browser-Tests mit Playwright in Chromium und WebKit (`npm run test:browser`, eigener CI-Job): Karte mit lokal gebündeltem MapLibre, Minimalstil ohne Netz und 700 erzeugten Punkten; die Card liegt wie in Home Assistant in einem Shadow-Root. Invariante: Nach jedem Zoomen und Schwenken wird jeder aktivierte Punkt im Blickfeld genau einmal dargestellt, als Einzelpunkt oder in einem sichtbar platzierten Cluster.
+- Ursache des Verschwindens beim Herauszoomen reproduziert (Chromium und WebKit):
+  1. Die Cluster-Marker erhielten über `.ortsnetz-cluster { position:relative }` keine absolute Positionierung mehr (die Regel der Card überschreibt `.maplibregl-marker { position:absolute }`). Die Marker lagen im normalen Fluss untereinander: nur der erste saß richtig, jeder weitere war um die Höhe der vorherigen nach unten verschoben und wurde meist vom Kartenrand abgeschnitten. Das betrifft jede Ansicht unter Zoom 12 dauerhaft.
+  2. Marker wurden nur im Sichtbereich plus 15 % Rand angelegt; in kleinen Karten ist der Rand schmaler als ein Cluster, Randpunkte fehlten bis zur nächsten Bewegung.
+  3. Trafen die Daten ein, während Kartenkacheln luden (`isStyleLoaded()` false), verwarf `_renderPoints` sie still; die Karte blieb bis zum nächsten Abruf leer.
+  Die Browser-Tests markieren diese Fehler für den alten Pfad als erwartet fehlschlagend.
+
 ## 2.0.0
 
 Erste stabile Version der zusammengeführten Integration; entspricht 2.0.0-beta.3 mit folgenden Ergänzungen:
