@@ -12,37 +12,83 @@ class FakeMap {
     this.options = options;
     this.handlers = {};
     this.zoom = options.zoom;
+    this.center = options.center;
     this.sources = {};
     this.layers = [];
+    this.paint = {};
     this.removed = false;
     this.setStyleCalls = [];
+    this.easeToCalls = [];
+    // Wie MapLibre: nach setData/setStyle ist der Stil "nicht geladen", bis idle feuert.
+    this.styleLoaded = false;
+    this.autoStyleLoaded = null; // fester Wert für isStyleLoaded(), sonst null
+    this.renderedFeatures = [];
+    this.clusterExpansionZoom = 14;
     maps.push(this);
   }
   on(event, ...args) {
     const handler = args[args.length - 1];
-    (this.handlers[event] ||= []).push(handler);
+    const layer = args.length > 1 ? args[0] : null;
+    (this.handlers[event] ||= []).push({ handler, layer, once: false });
     return this;
   }
-  once(event, handler) {
-    return this.on(event, handler);
+  once(event, ...args) {
+    this.on(event, ...args);
+    this.handlers[event][this.handlers[event].length - 1].once = true;
+    return this;
   }
-  fire(event) {
-    for (const handler of this.handlers[event] || []) handler();
+  off(event, ...args) {
+    const handler = args[args.length - 1];
+    this.handlers[event] = (this.handlers[event] || []).filter((entry) => entry.handler !== handler);
+    return this;
+  }
+  fire(event, payload) {
+    if (event === "idle" || event === "load" || event === "style.load") this.styleLoaded = true;
+    const entries = this.handlers[event] || [];
+    this.handlers[event] = entries.filter((entry) => !entry.once);
+    for (const entry of entries) entry.handler(payload);
   }
   addControl() {}
   remove() { this.removed = true; }
   resize() {}
   getZoom() { return this.zoom; }
+  getCenter() { return this.center; }
+  easeTo(options) {
+    this.easeToCalls.push(options);
+    if (options.zoom !== undefined) this.zoom = options.zoom;
+    if (options.center !== undefined) this.center = options.center;
+  }
   project([lng, lat]) { return { x: lng * 1000, y: lat * 1000 }; }
   getBounds() {
     return { getWest: () => -180, getEast: () => 180, getSouth: () => -90, getNorth: () => 90 };
   }
+  getStyle() {
+    return { version: 8, sources: { ...this.sources }, layers: [...this.layers] };
+  }
   getSource(id) { return this.sources[id]; }
-  addSource(id, source) { this.sources[id] = { ...source, setData: (data) => { this.sources[id].data = data; } }; }
+  addSource(id, source) {
+    this.styleLoaded = false;
+    this.sources[id] = {
+      ...source,
+      setDataCalls: 0,
+      setData: (data) => {
+        this.sources[id].data = data;
+        this.sources[id].setDataCalls += 1;
+        this.styleLoaded = false;
+      },
+      getClusterExpansionZoom: () => Promise.resolve(this.clusterExpansionZoom),
+    };
+  }
+  getLayer(id) { return this.layers.find((layer) => layer.id === id); }
   addLayer(layer) { this.layers.push(layer); }
-  isStyleLoaded() { return true; }
-  getCanvas() { return { style: {} }; }
-  setStyle(url, options) { this.setStyleCalls.push({ url, options }); }
+  setPaintProperty(id, name, value) { (this.paint[id] ||= {})[name] = value; }
+  queryRenderedFeatures() { return this.renderedFeatures; }
+  isStyleLoaded() { return this.autoStyleLoaded ?? this.styleLoaded; }
+  getCanvas() { return (this.canvas ||= { style: {} }); }
+  setStyle(url, options) {
+    this.setStyleCalls.push({ url, options });
+    this.styleLoaded = false;
+  }
 }
 
 class FakeMarker {
@@ -166,6 +212,7 @@ describe("Status je Messpunkt", () => {
   it("zeigt den Forecast in Marker und Popup aus denselben Feldern", () => {
     const card = newCard();
     const map = new FakeMap({ zoom: 14 });
+    map.fire("idle");
     card._map = map;
     card._maplibregl = fakeMapLibre;
     card._mapLoaded = true;
@@ -193,6 +240,26 @@ describe("Cluster", () => {
     const result = card._computeClusters();
     expect(result.clusters).toHaveLength(0);
     expect(result.singles).toHaveLength(2);
+  });
+});
+
+// ---- Nachbildung von MapLibre selbst -------------------------------------------
+
+describe("FakeMap", () => {
+  it("bildet once, Argumente und isStyleLoaded nach", () => {
+    const map = new FakeMap({ zoom: 5 });
+    const seen = [];
+    map.once("idle", (payload) => seen.push(payload));
+    map.fire("idle", "a");
+    map.fire("idle", "b");
+    expect(seen).toEqual(["a"]);
+    expect(map.isStyleLoaded()).toBe(true);
+    map.addSource("s", { type: "geojson" });
+    map.getSource("s").setData({});
+    expect(map.isStyleLoaded()).toBe(false);
+    map.fire("idle");
+    map.setStyle("x");
+    expect(map.isStyleLoaded()).toBe(false);
   });
 });
 
@@ -306,6 +373,42 @@ describe("Abruf der Messwerte", () => {
       await card._loadMeasurements();
       expect(card._statusElement.textContent).toBe(text);
     }
+  });
+});
+
+// ---- Diagnose ----------------------------------------------------------------------
+
+describe("Diagnosezeile", () => {
+  it("ist ohne debug ausgeblendet", async () => {
+    window.maplibregl = fakeMapLibre;
+    const card = newCard();
+    card.setConfig({});
+    card.hass = makeHass();
+    document.body.appendChild(card);
+    await flush();
+    expect(card.querySelector(".ortsnetz-debug").hidden).toBe(true);
+  });
+
+  it("zeigt mit debug: true Zoom, gesetzte Punkte, Cluster und sichtbare Einzelpunkte", async () => {
+    window.maplibregl = fakeMapLibre;
+    const card = newCard();
+    card.setConfig({ debug: true });
+    card.hass = makeHass();
+    document.body.appendChild(card);
+    await flush();
+    const map = maps[0];
+    map.zoom = 8.43;
+    map.layers.push({ id: "ortsnetz-points" });
+    map.renderedFeatures = [
+      { properties: { public_id: "a" } },
+      { properties: { public_id: "b" } },
+      { properties: { public_id: "b" } }, // Kachelgrenze: doppelt geliefert
+    ];
+    card._allFeatures = new Array(312);
+    map.fire("idle");
+    const element = card.querySelector(".ortsnetz-debug");
+    expect(element.hidden).toBe(false);
+    expect(element.textContent).toBe("Zoom 8,4 · 312 Punkte gesetzt · 0 Cluster · 2 Einzel sichtbar");
   });
 });
 

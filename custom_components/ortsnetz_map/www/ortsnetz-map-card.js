@@ -45,6 +45,7 @@ const DEFAULT_CONFIG = {
   refresh_interval: 300,
   show_status: true,
   show_legend: true,
+  debug: false,
 };
 
 let mapLibrePromise;
@@ -210,6 +211,7 @@ class OrtsnetzMapCard extends HTMLElement {
       : "auto";
     merged.show_status = merged.show_status !== false;
     merged.show_legend = merged.show_legend !== false;
+    merged.debug = merged.debug === true;
     this._config = merged;
 
     if (this._initialized && this.isConnected && this._hass) this._reinitialize();
@@ -261,6 +263,7 @@ class OrtsnetzMapCard extends HTMLElement {
     }
     this._mapElement = null;
     this._statusElement = null;
+    this._debugElement = null;
     this._legendElement = null;
     this._initialized = false;
     this._mapLoaded = false;
@@ -283,6 +286,8 @@ class OrtsnetzMapCard extends HTMLElement {
           .ortsnetz-map { width:100%; height:100%; min-height:168px; background:var(--primary-background-color); }
           .ortsnetz-status { position:absolute; z-index:5; left:10px; bottom:28px; padding:6px 9px; border-radius:7px; font-size:11px; background:color-mix(in srgb, var(--card-background-color) 92%, transparent); color:var(--primary-text-color); box-shadow:0 1px 4px rgba(0,0,0,.2); pointer-events:none; }
           .ortsnetz-status[hidden] { display:none; }
+          .ortsnetz-debug { position:absolute; z-index:5; left:10px; top:10px; margin-left:44px; padding:4px 7px; border-radius:6px; font:11px/1.3 monospace; background:rgba(0,0,0,.72); color:#fff; pointer-events:none; }
+          .ortsnetz-debug[hidden] { display:none; }
           .ortsnetz-legend { position:absolute; z-index:5; right:10px; bottom:28px; max-width:min(240px, calc(100% - 20px)); max-height:calc(100% - 60px); overflow:auto; box-sizing:border-box; padding:8px 11px; border-radius:8px; font-size:12px; line-height:1.35; background:color-mix(in srgb, var(--card-background-color) 94%, transparent); color:var(--primary-text-color); box-shadow:0 1px 6px rgba(0,0,0,.25); }
           .ortsnetz-legend[hidden] { display:none; }
           .legend-head { display:flex; align-items:center; justify-content:space-between; gap:12px; font-weight:700; font-size:13px; cursor:pointer; user-select:none; }
@@ -328,11 +333,13 @@ class OrtsnetzMapCard extends HTMLElement {
           <div class="ortsnetz-map"></div>
           <div class="ortsnetz-status" ${this._config.show_status ? "" : "hidden"}>Lade Messwerte …</div>
           <div class="ortsnetz-legend" ${this._config.show_legend ? "" : "hidden"}></div>
+          <div class="ortsnetz-debug" ${this._config.debug ? "" : "hidden"}></div>
         </div>
       </ha-card>`;
 
     this._mapElement = this.querySelector(".ortsnetz-map");
     this._statusElement = this.querySelector(".ortsnetz-status");
+    this._debugElement = this.querySelector(".ortsnetz-debug");
     this._legendElement = this.querySelector(".ortsnetz-legend");
     this._legendOpen = this._mapElement.clientWidth >= 520;
     this._installLegendEvents();
@@ -370,6 +377,7 @@ class OrtsnetzMapCard extends HTMLElement {
       });
 
       this._map.on("moveend", this._onMapMoveEnd);
+      if (this._config.debug) this._map.on("idle", () => this._updateDebug());
 
       const refreshSeconds = Math.max(60, Number(this._config.refresh_interval) || 300);
       // Bedarfsgesteuert: nur abrufen, solange der Tab sichtbar ist.
@@ -743,10 +751,10 @@ class OrtsnetzMapCard extends HTMLElement {
         const zoom = Math.max(camera?.zoom ?? 0, current + 1.5);
         this._map.easeTo({ center: camera?.center ?? [lng, lat], zoom: Math.min(zoom, 18) });
       });
-      this._clusterMarkers.set(
-        id,
-        new this._maplibregl.Marker({ element }).setLngLat([lng, lat]).addTo(this._map)
-      );
+      const marker = new this._maplibregl.Marker({ element }).setLngLat([lng, lat]).addTo(this._map);
+      // Für Diagnose und Browser-Tests: welche Punkte der Marker vertritt.
+      marker.ortsnetzIds = cluster.members.map((member) => member.properties.public_id);
+      this._clusterMarkers.set(id, marker);
     }
 
     for (const [id, marker] of this._clusterMarkers) {
@@ -983,6 +991,29 @@ class OrtsnetzMapCard extends HTMLElement {
       },
     });
     this._updateClusters();
+  }
+
+  // ---- Diagnose (Option debug) ----------------------------------------------
+
+  // Zahlen für die Diagnosezeile: gesetzte Punkte, sichtbare Cluster und Einzelpunkte.
+  _debugStats() {
+    const map = this._map;
+    const rendered = map?.getLayer?.(LAYER_ID) ? map.queryRenderedFeatures({ layers: [LAYER_ID] }) : [];
+    const singles = new Set(rendered.map((feature) => feature.properties?.public_id)).size;
+    return {
+      zoom: map ? map.getZoom() : 0,
+      set: this._allFeatures.length,
+      clusters: this._clusterMarkers.size,
+      singles,
+    };
+  }
+
+  _updateDebug() {
+    if (!this._debugElement || !this._config.debug || !this._map) return;
+    const stats = this._debugStats();
+    const zoom = stats.zoom.toLocaleString("de-DE", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+    this._debugElement.textContent =
+      `Zoom ${zoom} · ${stats.set} Punkte gesetzt · ${stats.clusters} Cluster · ${stats.singles} Einzel sichtbar`;
   }
 
   _fmtV(value) {
