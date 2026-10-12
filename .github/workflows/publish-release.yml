@@ -1,0 +1,112 @@
+name: Release veröffentlichen
+
+# Von Hand starten: Actions → "Release veröffentlichen" → Run workflow.
+# Setzt die Version in manifest.json, VERSION und der Kopfzeile der Card, testet,
+# committet auf main, setzt den Tag und legt das GitHub-Release an.
+# Versionen mit Bindestrich (z. B. 2.0.1-beta.1) werden als Vorabversion veröffentlicht.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version ohne v, z. B. 2.0.1-beta.1 oder 2.0.1"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Version setzen, taggen, veröffentlichen
+    runs-on: ubuntu-latest
+    steps:
+      - name: Nur von main aus
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          [ "$REF" = "refs/heads/main" ] || { echo "::error::Bitte den Workflow auf main starten (aktuell $REF)."; exit 1; }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Eingabe prüfen
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::Ungültige Version '$VERSION'. Erlaubt: 2.0.1 oder 2.0.1-beta.1 (ohne v)."
+            exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "::error::Der Tag v$VERSION existiert bereits."
+            exit 1
+          fi
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
+      - name: Tests der Card
+        run: |
+          npm ci
+          npm test
+          node --check custom_components/ortsnetz_map/www/ortsnetz-map-card.js
+
+      - name: Versionen setzen
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          MANIFEST=custom_components/ortsnetz_map/manifest.json
+          CARD=custom_components/ortsnetz_map/www/ortsnetz-map-card.js
+          jq --arg v "$VERSION" '.version = $v' "$MANIFEST" > "$RUNNER_TEMP/manifest.json"
+          mv "$RUNNER_TEMP/manifest.json" "$MANIFEST"
+          printf '%s\n' "$VERSION" > VERSION
+          sed -i "1s|.*|// Ortsnetz Map Card v$VERSION|" "$CARD"
+          # Gegenprobe wie im Release-Workflow
+          [ "$(jq -r .version "$MANIFEST")" = "$VERSION" ] || { echo "::error::manifest.json"; exit 1; }
+          [ "$(tr -d '[:space:]' < VERSION)" = "$VERSION" ] || { echo "::error::VERSION"; exit 1; }
+          [ "$(head -n 1 "$CARD")" = "// Ortsnetz Map Card v$VERSION" ] || { echo "::error::Card-Kopfzeile"; exit 1; }
+          git --no-pager diff --stat
+
+      - name: Commit und Tag auf main
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add VERSION custom_components/ortsnetz_map/manifest.json custom_components/ortsnetz_map/www/ortsnetz-map-card.js
+          if git diff --cached --quiet; then
+            echo "Versionen standen schon auf $VERSION, kein neuer Commit."
+          else
+            git commit -m "Version $VERSION"
+          fi
+          git tag "v$VERSION"
+          # Atomar: entweder Commit und Tag zusammen oder nichts.
+          git push --atomic origin HEAD:main "refs/tags/v$VERSION" || {
+            echo "::error::Push auf main abgelehnt (Branch-Schutz?). Bei aktivem Schutz muss die Version per Pull Request gesetzt und der Tag von Hand angelegt werden."
+            exit 1
+          }
+
+      - name: GitHub-Release anlegen
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          TAG="v$VERSION"
+          BASE="${VERSION%%-*}"
+          ARGS=(--title "$VERSION" --verify-tag)
+          if [ -f "RELEASE_NOTES_${VERSION}.md" ]; then
+            ARGS+=(--notes-file "RELEASE_NOTES_${VERSION}.md")
+          elif [ -f "RELEASE_NOTES_${BASE}.md" ]; then
+            ARGS+=(--notes-file "RELEASE_NOTES_${BASE}.md")
+          else
+            ARGS+=(--generate-notes)
+          fi
+          if [[ "$VERSION" == *-* ]]; then ARGS+=(--prerelease); fi
+          gh release create "$TAG" "${ARGS[@]}"
+          echo "Release $TAG veröffentlicht." >> "$GITHUB_STEP_SUMMARY"
