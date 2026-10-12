@@ -52,6 +52,7 @@ class FakeMap {
   remove() { this.removed = true; }
   resize() {}
   getZoom() { return this.zoom; }
+  isMoving() { return false; }
   getCenter() { return this.center; }
   easeTo(options) {
     this.easeToCalls.push(options);
