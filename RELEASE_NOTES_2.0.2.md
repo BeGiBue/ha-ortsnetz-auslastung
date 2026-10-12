@@ -10,4 +10,6 @@ Behebt zwei Fehler der Karte.
 
 **Weitere Änderungen:** Die Karte lässt sich nicht mehr drehen oder kippen. Schlägt ein Abruf fehl, versucht die Card es nach 15, 30 und 60 Sekunden erneut, zeigt bis dahin den letzten Stand und ruft nach einer Wiederverbindung zu Home Assistant sofort ab. Änderungen im Karteneditor bauen die Karte nicht mehr neu auf; der Editor schreibt nur noch abweichende, gültige Werte in die Konfiguration (keine Nullen bei leeren Feldern). Die Quellenangabe ist kompakt.
 
+Außerdem liegen Legende und Statuszeile nicht mehr auf der Quellenangabe (dem (i) unten rechts).
+
 Nach dem Update in HACS Home Assistant neu starten und Browser bzw. App vollständig neu laden.
