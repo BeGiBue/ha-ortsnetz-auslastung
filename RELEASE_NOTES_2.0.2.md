@@ -8,6 +8,6 @@ Behebt zwei Fehler der Karte.
 
 **Verhaltensänderung – kooperative Gesten:** Ein Finger scrollt jetzt die Dashboard-Seite, auch über der Karte. Die Karte bewegt und zoomt man mit zwei Fingern, am Computer zoomt das Mausrad nur mit Strg (Mac: ⌘). Antippen von Punkten und Clustern funktioniert wie bisher. Abschalten: `cooperative_gestures: false` in der Card-Konfiguration oder das Häkchen „Zwei Finger zum Verschieben“ im Karteneditor entfernen.
 
-**Weitere Änderungen:** Die Karte lässt sich nicht mehr drehen oder kippen. Schlägt ein Abruf fehl, versucht die Card es nach 15, 30 und 60 Sekunden erneut, zeigt bis dahin den letzten Stand und ruft nach einer Wiederverbindung zu Home Assistant sofort ab.
+**Weitere Änderungen:** Die Karte lässt sich nicht mehr drehen oder kippen. Schlägt ein Abruf fehl, versucht die Card es nach 15, 30 und 60 Sekunden erneut, zeigt bis dahin den letzten Stand und ruft nach einer Wiederverbindung zu Home Assistant sofort ab. Änderungen im Karteneditor bauen die Karte nicht mehr neu auf; der Editor schreibt nur noch abweichende, gültige Werte in die Konfiguration (keine Nullen bei leeren Feldern). Die Quellenangabe ist kompakt.
 
 Nach dem Update in HACS Home Assistant neu starten und Browser bzw. App vollständig neu laden.

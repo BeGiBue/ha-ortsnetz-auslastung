@@ -26,6 +26,13 @@ class FakeMap {
     this.clusterExpansionZoom = 14;
     this.touchZoomRotate = { rotationDisabled: false, disableRotation() { this.rotationDisabled = true; } };
     this.keyboard = { rotationDisabled: false, disableRotation() { this.rotationDisabled = true; } };
+    this.cooperativeGestures = {
+      enabled: Boolean(options.cooperativeGestures),
+      enable() { this.enabled = true; },
+      disable() { this.enabled = false; },
+      isEnabled() { return this.enabled; },
+    };
+    this.jumpToCalls = [];
     maps.push(this);
   }
   on(event, ...args) {
@@ -56,6 +63,11 @@ class FakeMap {
   getZoom() { return this.zoom; }
   isMoving() { return false; }
   getCenter() { return this.center; }
+  jumpTo(options) {
+    this.jumpToCalls.push(options);
+    if (options.zoom !== undefined) this.zoom = options.zoom;
+    if (options.center !== undefined) this.center = options.center;
+  }
   easeTo(options) {
     this.easeToCalls.push(options);
     if (options.zoom !== undefined) this.zoom = options.zoom;
@@ -736,6 +748,8 @@ describe("Touch-Bedienung", () => {
   it("verzichtet mit cooperative_gestures: false darauf, Drehen bleibt gesperrt", async () => {
     const map = await mapFor({ cooperative_gestures: false });
     expect(map.options.cooperativeGestures).toBeFalsy();
+    // Deutsche Texte trotzdem, falls die Option später eingeschaltet wird.
+    expect(map.options.locale["CooperativeGesturesHandler.MobileHelpText"]).toBe("Karte mit zwei Fingern bewegen");
     expect(map.options.dragRotate).toBe(false);
     expect(map.touchZoomRotate.rotationDisabled).toBe(true);
   });
@@ -915,3 +929,156 @@ describe("Editor", () => {
     expect(editor.shadowRoot.querySelector('[data-key="zoom"]').value).toBe("12");
   });
 });
+describe("Editor: Eingaben", () => {
+  function editorWith(config) {
+    const editor = document.createElement("ortsnetz-map-card-editor");
+    editor.setConfig(config);
+    editor.hass = makeHass();
+    const events = [];
+    editor.addEventListener("config-changed", (event) => events.push(event.detail.config));
+    const change = (key, value) => {
+      const input = editor.shadowRoot.querySelector(`[data-key="${key}"]`);
+      if (input.type === "checkbox") input.checked = value;
+      else input.value = value;
+      input.dispatchEvent(new Event("change"));
+    };
+    return { editor, events, change, last: () => events.at(-1) };
+  }
+
+  it("verwirft leere und ungültige Zahlen statt 0 zu schreiben", () => {
+    const { change, last, events } = editorWith({ type: "custom:ortsnetz-map-card", zoom: 12 });
+    change("zoom", "");
+    expect(last()).toEqual({ type: "custom:ortsnetz-map-card" });
+    change("zoom", "abc");
+    expect(events.at(-1)?.zoom).toBeUndefined();
+    change("refresh_interval", "");
+    expect(last()).not.toHaveProperty("refresh_interval");
+  });
+
+  it("klemmt Zahlen auf die erlaubten Bereiche", () => {
+    const { change, last } = editorWith({ type: "custom:ortsnetz-map-card" });
+    change("zoom", "25");
+    expect(last().zoom).toBe(19);
+    change("refresh_interval", "5");
+    expect(last().refresh_interval).toBe(60);
+    change("refresh_interval", "99999");
+    expect(last().refresh_interval).toBe(3600);
+  });
+
+  it("schreibt Standardwerte nicht in die Konfiguration", () => {
+    const { change, last } = editorWith({ type: "custom:ortsnetz-map-card" });
+    change("zoom", "12");
+    expect(last()).toEqual({ type: "custom:ortsnetz-map-card", zoom: 12 });
+    change("zoom", "10");
+    expect(last()).toEqual({ type: "custom:ortsnetz-map-card" });
+    change("show_legend", false);
+    expect(last()).toEqual({ type: "custom:ortsnetz-map-card", show_legend: false });
+    change("show_legend", true);
+    expect(last()).toEqual({ type: "custom:ortsnetz-map-card" });
+    change("cooperative_gestures", false);
+    expect(last()).toEqual({ type: "custom:ortsnetz-map-card", cooperative_gestures: false });
+  });
+
+  it("behält gültige Koordinaten bei leerer oder ungültiger Eingabe und klemmt sie", () => {
+    const { change, last, events } = editorWith({ type: "custom:ortsnetz-map-card", latitude: 48.1, longitude: 11.5 });
+    change("latitude", "");
+    expect(events).toHaveLength(0);
+    change("latitude", "95");
+    expect(last()).toMatchObject({ latitude: 90, longitude: 11.5 });
+    change("longitude", "-200");
+    expect(last()).toMatchObject({ latitude: 90, longitude: -180 });
+  });
+
+  it("lässt unbekannte Schlüssel der Konfiguration unverändert", () => {
+    const { change, last } = editorWith({ type: "custom:ortsnetz-map-card", grid_options: { rows: 6 } });
+    change("zoom", "11");
+    expect(last()).toEqual({ type: "custom:ortsnetz-map-card", grid_options: { rows: 6 }, zoom: 11 });
+  });
+});
+
+describe("setConfig ohne Neuaufbau", () => {
+  async function mounted(config = {}) {
+    window.maplibregl = fakeMapLibre;
+    const card = newCard();
+    card.setConfig(config);
+    card.hass = makeHass();
+    document.body.appendChild(card);
+    await flush();
+    return { card, map: maps[0] };
+  }
+
+  it("tut bei gleicher Konfiguration nichts", async () => {
+    const { card, map } = await mounted({ zoom: 8 });
+    card.setConfig({ zoom: 8 });
+    card.setConfig({ zoom: "8", show_status: true });
+    await flush();
+    expect(maps).toHaveLength(1);
+    expect(map.removed).toBe(false);
+    expect(map.jumpToCalls).toHaveLength(0);
+  });
+
+  it("verschiebt bei neuem Zoom oder Mittelpunkt nur die Kamera", async () => {
+    const { card, map } = await mounted({ zoom: 8 });
+    card.setConfig({ zoom: 11, latitude: 48.1, longitude: 11.5 });
+    expect(maps).toHaveLength(1);
+    expect(map.removed).toBe(false);
+    expect(map.jumpToCalls.at(-1)).toEqual({ center: [11.5, 48.1], zoom: 11 });
+  });
+
+  it("schaltet Legende, Status und Diagnose über hidden um", async () => {
+    const { card } = await mounted({});
+    card.setConfig({ show_legend: false, show_status: false, debug: true });
+    await flush();
+    expect(maps).toHaveLength(1);
+    expect(card.querySelector(".ortsnetz-legend").hidden).toBe(true);
+    expect(card.querySelector(".ortsnetz-status").hidden).toBe(true);
+    expect(card.querySelector(".ortsnetz-debug").hidden).toBe(false);
+  });
+
+  it("zeichnet bei anderer Phase neu", async () => {
+    const { card, map } = await mounted({});
+    map.fire("style.load");
+    card._currentData = { points: [{ latitude: 52, longitude: 13, l1_v: 230, l2_v: 260 }] };
+    card._renderPoints(card._currentData);
+    expect(map.sources["ortsnetz-points"].data.features[0].properties.status).toBe("crit_high");
+    card.setConfig({ phase: "L1" });
+    expect(maps).toHaveLength(1);
+    expect(map.sources["ortsnetz-points"].data.features[0].properties.status).toBe("normal");
+  });
+
+  it("startet bei neuem Intervall nur den Timer neu", async () => {
+    const { card } = await mounted({});
+    const clear = vi.spyOn(window, "clearInterval");
+    const set = vi.spyOn(window, "setInterval");
+    card.setConfig({ refresh_interval: 600 });
+    expect(clear).toHaveBeenCalled();
+    expect(set).toHaveBeenCalledWith(expect.any(Function), 600000);
+    expect(maps).toHaveLength(1);
+    clear.mockRestore();
+    set.mockRestore();
+  });
+
+  it("schaltet kooperative Gesten an der laufenden Karte um", async () => {
+    const { card, map } = await mounted({});
+    expect(map.cooperativeGestures.isEnabled()).toBe(true);
+    card.setConfig({ cooperative_gestures: false });
+    expect(map.cooperativeGestures.isEnabled()).toBe(false);
+    card.setConfig({});
+    expect(map.cooperativeGestures.isEnabled()).toBe(true);
+    expect(maps).toHaveLength(1);
+  });
+});
+
+describe("Quellenangabe", () => {
+  it("ist kompakt", async () => {
+    window.maplibregl = fakeMapLibre;
+    const card = newCard();
+    card.hass = makeHass();
+    document.body.appendChild(card);
+    await flush();
+    expect(maps[0].options.attributionControl).toMatchObject({ compact: true });
+    // Ohne eigenen Eintrag wäre die Angabe im Ersatzstil (ohne Quellen) leer und ausgeblendet.
+    expect(maps[0].options.attributionControl.customAttribution).toContain("maplibre.org");
+  });
+});
+
