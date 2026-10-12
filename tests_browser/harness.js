@@ -90,6 +90,22 @@ const HARNESS_HTML = `<!doctype html>
 </head><body><div id="host"></div>
 <script>
   window.matchMedia = window.matchMedia || (() => ({ matches: false }));
+  // 24 Stunden im 5-Minuten-Takt, Spannungen um 230 V mit Ausreißern, Frequenz um 50 Hz.
+  window.__makeHistory = () => {
+    const end = Date.now();
+    const start = end - 24 * 3600 * 1000;
+    const samples = [];
+    for (let t = start; t <= end; t += 5 * 60 * 1000) {
+      const i = samples.length;
+      const wave = Math.sin(i / 20) * 8;
+      samples.push({
+        at: new Date(t).toISOString(),
+        l1_v: 230 + wave, l2_v: 228 - wave / 2, l3_v: i % 50 === 0 ? 255 : 232 + wave / 3,
+        grid_frequency_hz: 50 + Math.sin(i / 7) * 0.04,
+      });
+    }
+    return { start: new Date(start).toISOString(), end: new Date(end).toISOString(), samples };
+  };
   window.__setupCard = (config, points, size, options = {}) => {
     const host = document.getElementById("host");
     host.style.setProperty("--w", size.width + "px");
@@ -98,13 +114,20 @@ const HARNESS_HTML = `<!doctype html>
     // Stylesheets aus document.head wirken dort nicht.
     const root = host.attachShadow({ mode: "open" });
     const style = document.createElement("style");
-    style.textContent = ":host{display:block} ortsnetz-map-card{display:block;height:100%}";
+    // Farbvariablen eines hellen Home-Assistant-Themes (sonst wären z. B. Popups durchsichtig).
+    style.textContent = ":host{display:block;--card-background-color:#fff;--primary-background-color:#fafafa;" +
+      "--primary-text-color:#212121;--secondary-text-color:#727272;--primary-color:#03a9f4;--divider-color:#e0e0e0}" +
+      " ortsnetz-map-card{display:block;height:100%}";
     root.appendChild(style);
     const card = document.createElement("ortsnetz-map-card");
     card.setConfig(config);
     let release;
     window.__dataReleased = options.holdData ? new Promise((resolve) => { release = resolve; }) : Promise.resolve();
     window.__releaseData = () => release?.();
+    // Verlauf für das Popup: mit holdHistory erst nach window.__releaseHistory().
+    let releaseHistory;
+    window.__historyReleased = options.holdHistory ? new Promise((resolve) => { releaseHistory = resolve; }) : Promise.resolve();
+    window.__releaseHistory = () => releaseHistory?.();
     card.hass = {
       config: { latitude: 51.0, longitude: 10.0 },
       themes: { darkMode: false },
@@ -112,6 +135,10 @@ const HARNESS_HTML = `<!doctype html>
         sendMessagePromise: async (msg) => {
           if (msg.type === "ortsnetz_map/get_points") await window.__dataReleased;
           if (msg.type === "ortsnetz_map/get_points") return JSON.parse(JSON.stringify({ points: window.__points }));
+          if (msg.type === "ortsnetz_map/get_history") {
+            await window.__historyReleased;
+            return window.__makeHistory();
+          }
           throw { code: "not_found" };
         },
       },
@@ -162,11 +189,11 @@ export async function installRoutes(page, { tileDelay = 0, glyphsFail = false } 
 
 // Lädt die Testseite und wartet, bis die Karte Punkte zeigt.
 // Mit holdData wartet die hass-Attrappe auf window.__releaseData(), bevor sie die Punkte liefert.
-export async function openCard(page, { config = {}, points = makePoints(), size = { width: 900, height: 650 }, tileDelay = 0, holdData = false, glyphsFail = false } = {}) {
+export async function openCard(page, { config = {}, points = makePoints(), size = { width: 900, height: 650 }, tileDelay = 0, holdData = false, holdHistory = false, glyphsFail = false } = {}) {
   await page.setViewportSize({ width: size.width + 40, height: size.height + 40 });
   await installRoutes(page, { tileDelay, glyphsFail });
   await page.goto(`${ORIGIN}/harness.html`);
-  await page.evaluate(({ config, points, size, holdData }) => window.__setupCard(config, points, size, { holdData }), { config, points, size, holdData });
+  await page.evaluate(({ config, points, size, holdData, holdHistory }) => window.__setupCard(config, points, size, { holdData, holdHistory }), { config, points, size, holdData, holdHistory });
   if (holdData) {
     await page.waitForFunction(() => window.__card?._map?.loaded());
     return points;

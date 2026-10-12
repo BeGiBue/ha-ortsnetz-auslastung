@@ -52,6 +52,7 @@ class FakeMap {
   remove() { this.removed = true; }
   resize() {}
   getZoom() { return this.zoom; }
+  isMoving() { return false; }
   getCenter() { return this.center; }
   easeTo(options) {
     this.easeToCalls.push(options);
@@ -424,6 +425,36 @@ describe("Interaktion", () => {
     expect(popups).toHaveLength(1);
     expect(popups[0].at).toEqual([13, 52]);
     expect(popups[0].html).toContain("Ortsnetz-Messpunkt");
+  });
+});
+
+// ---- Popup in der Karte halten ------------------------------------------------
+
+describe("Verschiebung für das Popup", () => {
+  const offset = (...args) => customElements.get("ortsnetz-map-card").popupPanOffset(...args);
+  const view = { width: 400, height: 300 };
+
+  it("verschiebt nicht, wenn das Popup mit 12 px Rand passt", () => {
+    expect(offset({ left: 12, top: 12, right: 388, bottom: 288 }, view, { x: 200, y: 150 })).toEqual([0, 0]);
+  });
+
+  it("schiebt so weit wie nötig nach links, rechts, oben oder unten", () => {
+    // panBy([dx, dy]) bewegt den Inhalt um -dx/-dy.
+    expect(offset({ left: 100, top: 50, right: 418, bottom: 150 }, view, { x: 260, y: 150 })).toEqual([30, 0]);
+    expect(offset({ left: -20, top: 50, right: 200, bottom: 150 }, view, { x: 90, y: 150 })).toEqual([-32, 0]);
+    expect(offset({ left: 50, top: -5, right: 200, bottom: 100 }, view, { x: 120, y: 100 })).toEqual([0, -17]);
+    expect(offset({ left: 50, top: 150, right: 200, bottom: 320 }, view, { x: 120, y: 150 })).toEqual([0, 32]);
+  });
+
+  it("zeigt ein zu hohes Popup von oben (Schließen-Kreuz sichtbar)", () => {
+    expect(offset({ left: 50, top: 100, right: 200, bottom: 500 }, view, { x: 120, y: 100 })).toEqual([0, 88]);
+  });
+
+  it("lässt den angetippten Punkt nie aus dem Blickfeld laufen", () => {
+    // Popup über dem Punkt ragt oben heraus, der Punkt sitzt unten am Rand.
+    expect(offset({ left: 50, top: -50, right: 200, bottom: 280 }, view, { x: 120, y: 280 })).toEqual([0, -8]);
+    // Popup ragt rechts heraus, der Punkt sitzt links am Rand: höchstens 8 px schieben.
+    expect(offset({ left: 300, top: 50, right: 500, bottom: 150 }, view, { x: 20, y: 150 })).toEqual([8, 0]);
   });
 });
 

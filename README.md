@@ -15,7 +15,7 @@ Der Browser ruft die externe API nicht direkt auf, CORS ist kein Problem. Die Me
 - Markerfarbe nach dem schlechtesten Wert aller gemessenen Phasen (Unterspannung hat bei gleicher Schwere Vorrang). Nicht gemessene Phasen werden ignoriert. Schwellwerte und Farben kommen aus der API.
 - Markergröße nach dem erwarteten PV-Ertrag in kWh/kWp/Tag (0–10), sofern ein Forecast vorliegt.
 - Einklappbare Legende mit den Messungen der letzten 24 Stunden je Status; Häkchen blenden einzelne Status aus.
-- Popup mit L1/L2/L3, Netzfrequenz, PV-Forecast und Zeitstempel sowie zwei 24-Stunden-Verläufen (Spannung und Frequenz). Gelbe und rote Hintergrundbereiche markieren Warnungen und kritische Werte.
+- Popup mit L1/L2/L3, Netzfrequenz, PV-Forecast und Zeitstempel sowie zwei 24-Stunden-Verläufen (Spannung und Frequenz). Gelbe und rote Hintergrundbereiche markieren Warnungen und kritische Werte. Das Popup passt sich der Kartengröße an; die Karte wird bei Bedarf so verschoben, dass es vollständig sichtbar ist, längerer Inhalt scrollt.
 - Veraltete Messungen (älter als 20 Minuten) werden transparent dargestellt.
 - Dark Mode nach dem aktiven Home-Assistant-Theme, OpenFreeMap-Vektorkarte ohne API-Key, grafischer Karteneditor, Sections-Layout mit Full Width.
 

@@ -24,6 +24,8 @@ const CLUSTER_RADIUS = 45;
 const COUNT_FONT = ["Noto Sans Regular"];
 // Treffbereich um den Tipp- bzw. Klickpunkt in Pixeln (Touch).
 const HIT_TOLERANCE = 10;
+// Abstand des Popups zum Kartenrand in Pixeln.
+const POPUP_MARGIN = 12;
 const STALE_AFTER_MS = 20 * 60 * 1000;
 
 const HISTORY_GAP_MS = 12 * 60 * 1000; // größere Lücken unterbrechen die Linie
@@ -179,6 +181,22 @@ function toCoordinate(point) {
   if (lat === null || lng === null) return null;
   if (Math.abs(lat) > 90 || Math.abs(lng) > 180 || (lat === 0 && lng === 0)) return null;
   return [lng, lat];
+}
+
+// Verschiebung [dx, dy] für map.panBy, damit das Popup mit margin Pixeln Rand in der
+// Karte liegt (panBy bewegt den Inhalt um -dx/-dy). Alle Werte in Pixeln relativ zur
+// Karte. Ist das Popup zu groß, wird oben bzw. links ausgerichtet (Schließen-Kreuz und
+// Anfang des Inhalts sichtbar). Der angetippte Punkt bleibt immer im Blickfeld.
+function popupPanOffset(popup, view, point, margin = POPUP_MARGIN) {
+  const axis = (start, end, size, at) => {
+    let shift = 0;
+    if (end - start > size - 2 * margin || start < margin) shift = start - margin;
+    else if (end > size - margin) shift = end - (size - margin);
+    const min = at - (size - margin);
+    const max = at - margin;
+    return Math.round(Math.min(max, Math.max(min, shift))) + 0;
+  };
+  return [axis(popup.left, popup.right, view.width, point.x), axis(popup.top, popup.bottom, view.height, point.y)];
 }
 
 // Kurzer Hash (cyrb53) zum Erkennen geänderter Daten.
@@ -357,6 +375,8 @@ class OrtsnetzMapCard extends HTMLElement {
           .legend-row input { margin:0 0 0 4px; accent-color:var(--primary-color); }
           .legend-row.off { opacity:.45; }
           .legend-size { margin-top:8px; }
+          /* Popup über Legende, Statuszeile (z-index 5) und Zoom-Schaltflächen. */
+          .maplibregl-popup { z-index:6; }
           .maplibregl-popup-content { background:var(--card-background-color); color:var(--primary-text-color); border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,.25); }
           .maplibregl-popup-anchor-bottom .maplibregl-popup-tip { border-top-color:var(--card-background-color); }
           .maplibregl-popup-anchor-top .maplibregl-popup-tip { border-bottom-color:var(--card-background-color); }
@@ -374,7 +394,10 @@ class OrtsnetzMapCard extends HTMLElement {
           .popup-muted { opacity:.6; font-weight:400; }
           .popup-time { margin-top:8px; font-size:11px; opacity:.7; }
           .popup-warning { margin-top:8px; font-size:12px; }
-          .popup-charts { margin-top:10px; min-width:260px; }
+          .popup-charts { margin-top:10px; min-width:0; width:min(280px, calc(var(--ortsnetz-map-width, 400px) - 64px)); }
+          /* Popup-Inhalt scrollt, wenn er höher als die Karte wäre (Spitze 10 px, Innenabstand 30 px,
+             Rand 2 × 12 px). Das Schließen-Kreuz liegt außerhalb und bleibt sichtbar. */
+          .popup-scroll { max-height:calc(var(--ortsnetz-map-height, 400px) - 64px); overflow:auto; overscroll-behavior:contain; }
           .chart-title { display:flex; justify-content:space-between; gap:8px; margin-top:6px; font-size:11px; font-weight:600; }
           .chart-title .phase { font-weight:700; margin-left:6px; }
           .chart-svg { display:block; width:100%; height:auto; }
@@ -429,7 +452,11 @@ class OrtsnetzMapCard extends HTMLElement {
       }, refreshSeconds * 1000);
       document.addEventListener("visibilitychange", this._onVisibilityChange);
 
-      this._resizeObserver = new ResizeObserver(() => this._map?.resize());
+      this._updateMapSize();
+      this._resizeObserver = new ResizeObserver(() => {
+        this._updateMapSize();
+        this._map?.resize();
+      });
       this._resizeObserver.observe(this._mapElement);
       setTimeout(() => this._map?.resize(), 250);
     } catch (error) {
@@ -437,6 +464,22 @@ class OrtsnetzMapCard extends HTMLElement {
       this._setStatus(`Fehler: ${error?.message || error}`);
       console.error("Ortsnetz Map initialization failed", error);
     }
+  }
+
+  // Kartengröße als CSS-Variablen für das Popup (Breite der Diagramme, maximale Höhe).
+  _updateMapSize() {
+    const wrap = this.querySelector(".ortsnetz-wrap");
+    if (!wrap || !this._mapElement) return;
+    const width = this._mapElement.clientWidth;
+    const height = this._mapElement.clientHeight;
+    wrap.style.setProperty("--ortsnetz-map-width", `${width}px`);
+    wrap.style.setProperty("--ortsnetz-map-height", `${height}px`);
+    this._popup?.setMaxWidth(this._popupMaxWidth());
+  }
+
+  _popupMaxWidth() {
+    const width = this._mapElement?.clientWidth || 344;
+    return `${Math.max(160, Math.min(320, width - 2 * POPUP_MARGIN))}px`;
   }
 
   // Kartenmittelpunkt: eigene Koordinaten der Konfiguration, sonst der HA-Standort.
@@ -508,6 +551,10 @@ class OrtsnetzMapCard extends HTMLElement {
     map.on("mousemove", (event) => {
       map.getCanvas().style.cursor = this._featureAt(event.point) ? "pointer" : "";
     });
+    // Bewegt der Nutzer die Karte selbst, wird das offene Popup nicht mehr nachgeführt.
+    map.on("movestart", (event) => {
+      if (event?.originalEvent) this._popupUserMoved = true;
+    });
     map.on("click", (event) => {
       const feature = this._featureAt(event.point);
       if (!feature) return;
@@ -564,11 +611,46 @@ class OrtsnetzMapCard extends HTMLElement {
   _openPopup(maplibregl, feature) {
     const p = feature.properties || {};
     if (this._popup) this._popup.remove();
-    this._popup = new maplibregl.Popup({ closeButton: true, maxWidth: "320px" })
+    // Feste Ankerseite: unter dem Punkt in der oberen Kartenhälfte, sonst darüber. So
+    // springt das Popup nicht, wenn es wächst oder die Karte verschoben wird.
+    const at = this._map.project(feature.geometry.coordinates);
+    const height = this._mapElement?.clientHeight || 0;
+    this._popupUserMoved = false;
+    const popup = new maplibregl.Popup({
+      closeButton: true,
+      maxWidth: this._popupMaxWidth(),
+      anchor: at.y < height / 2 ? "top" : "bottom",
+    })
       .setLngLat(feature.geometry.coordinates)
-      .setHTML(this._popupHtml(p))
+      .setHTML(`<div class="popup-scroll">${this._popupHtml(p)}</div>`)
       .addTo(this._map);
-    if (p.public_id) this._loadHistory(this._popup, String(p.public_id));
+    this._popup = popup;
+    this._keepPopupVisible(popup);
+    if (p.public_id) this._loadHistory(popup, String(p.public_id));
+  }
+
+  // Verschiebt die Karte, bis das Popup mit Rand vollständig sichtbar ist. Aufruf nach
+  // dem Öffnen und nach jedem Nachladen; nicht mehr, sobald der Nutzer die Karte bewegt.
+  _keepPopupVisible(popup) {
+    requestAnimationFrame(() => {
+      const map = this._map;
+      if (!map || popup !== this._popup || this._popupUserMoved) return;
+      // Läuft noch eine Verschiebung, erst danach messen.
+      if (map.isMoving()) {
+        map.once("moveend", () => this._keepPopupVisible(popup));
+        return;
+      }
+      const element = popup.getElement();
+      if (!element?.isConnected || !this._mapElement) return;
+      const box = this._mapElement.getBoundingClientRect();
+      const rect = element.getBoundingClientRect();
+      const [dx, dy] = popupPanOffset(
+        { left: rect.left - box.left, top: rect.top - box.top, right: rect.right - box.left, bottom: rect.bottom - box.top },
+        { width: box.width, height: box.height },
+        map.project(popup.getLngLat()),
+      );
+      if (dx || dy) map.panBy([dx, dy], { duration: 250 });
+    });
   }
 
   _phaseRow(label, value) {
@@ -616,8 +698,11 @@ class OrtsnetzMapCard extends HTMLElement {
       if (!container.isConnected) return;
       container.innerHTML = this._historyHtml(history);
     } catch (error) {
-      if (container.isConnected) container.innerHTML = '<span class="popup-muted">Verlauf nicht verfügbar</span>';
+      if (!container.isConnected) return;
+      container.innerHTML = '<span class="popup-muted">Verlauf nicht verfügbar</span>';
     }
+    // Das Popup ist gewachsen: erneut prüfen, ob es noch in die Karte passt.
+    this._keepPopupVisible(popup);
   }
 
   // Schlechtester Status über alle gemessenen Phasen: "crit", "warn" oder null.
@@ -1113,6 +1198,9 @@ class OrtsnetzMapCard extends HTMLElement {
       min_rows: 3,
     };
   }
+
+  // Ohne DOM testbar (Vitest).
+  static popupPanOffset(...args) { return popupPanOffset(...args); }
 
   static getConfigElement() { return document.createElement("ortsnetz-map-card-editor"); }
 
