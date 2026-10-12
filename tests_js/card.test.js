@@ -630,6 +630,9 @@ describe("Theme-Wechsel", () => {
     card.hass = makeHass({ themes: { darkMode: true } });
     const [{ url, options }] = maps[0].setStyleCalls;
     expect(url).toContain("dark");
+    // Ohne Diff: MapLibre feuert style.load und die Card legt fehlende Layer an
+    // (ein per Diff übernommener Stil feuert kein style.load).
+    expect(options.diff).toBe(false);
     return options.transformStyle;
   }
 
