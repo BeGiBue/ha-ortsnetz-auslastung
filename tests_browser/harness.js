@@ -30,7 +30,9 @@ const ATTRIBUTION = '<a href="https://openfreemap.org" target="_blank">OpenFreeM
 
 function styleFor(name, tileDelay) {
   const style = structuredClone(STYLES[name] ?? STYLES.liberty);
+  // MapLibre zeigt Quellenangaben nur für Quellen, die ein Layer benutzt.
   style.sources.basemap = { type: "geojson", data: { type: "FeatureCollection", features: [] }, attribution: ATTRIBUTION };
+  style.layers.push({ id: "basemap", type: "circle", source: "basemap" });
   if (tileDelay) {
     // Simuliert eine Basiskarte, deren Kacheln (wie im Netz) erst nach einer Weile kommen.
     style.sources.raster = { type: "raster", tiles: [`${ORIGIN}/tiles/{z}/{x}/{y}.png`], tileSize: 256 };

@@ -13,7 +13,8 @@ const SIZES = {
 // Zielposition des Punkts auf der Karte (Bruchteile von Breite/Höhe bzw. Pixel vom Rand).
 const POSITIONS = {
   oben: (w, h) => [w / 2, 22],
-  unten: (w, h) => [w / 2, h - 22],
+  // Über der (aufgeklappten) Quellenangabe, die unten die ganze Breite belegen kann.
+  unten: (w, h) => [w / 2, h - 50],
   links: (w, h) => [22, h / 2],
   rechts: (w, h) => [w - 22, h * 0.3],
   mitte: (w, h) => [w / 2, h / 2],
