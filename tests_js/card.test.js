@@ -481,7 +481,8 @@ describe("Rendern", () => {
     expect(source.setDataCalls).toBe(calls);
     card._renderPoints({ points: [{ ...POINT, l1_v: 250 }] });
     expect(source.setDataCalls).toBe(calls + 1);
-    expect(map.sources["ortsnetz-cluster-labels"].data).toBe(source.data);
+    // Mit Torten gibt es keine Zähler-Quelle (siehe Rückfallebene).
+    expect(map.sources["ortsnetz-cluster-labels"]).toBeUndefined();
     card._renderPoints({ points: [{ ...POINT, l1_v: 250, stale: true }] });
     expect(source.setDataCalls).toBe(calls + 2);
   });
