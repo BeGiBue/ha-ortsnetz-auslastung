@@ -10,8 +10,9 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const WWW = path.join(ROOT, "custom_components/ortsnetz_map/www");
 export const ORIGIN = "http://ortsnetz.test";
 
-// Minimalstil ohne Kacheln. Mit glyphs (404) für den hellen, ohne für den dunklen Stil,
-// damit beide Pfade (Symbol-Layer möglich / nicht möglich) im Test vorkommen.
+// Minimalstil ohne Kacheln. Mit glyphs für den hellen, ohne für den dunklen Stil,
+// damit beide Pfade (Zähler als Symbol-Layer / ohne Zähler) im Test vorkommen.
+// Die Glyphen-Antwort ist leer, aber gültig (mit glyphsFail: 404).
 const MINIMAL_STYLE = { version: 8, sources: {}, layers: [{ id: "bg", type: "background", paint: { "background-color": "#ddd" } }] };
 const STYLES = {
   liberty: { ...MINIMAL_STYLE, glyphs: `${ORIGIN}/fonts/{fontstack}/{range}.pbf` },
@@ -127,7 +128,7 @@ async function fulfillFile(route, file, contentType) {
   route.fulfill({ status: 200, contentType, body: await readFile(file) });
 }
 
-export async function installRoutes(page, { tileDelay = 0 } = {}) {
+export async function installRoutes(page, { tileDelay = 0, glyphsFail = false } = {}) {
   await page.route("**/*", async (route) => {
     const url = new URL(route.request().url());
     // WebKit leitet auch blob:-URLs (MapLibre-Worker) durch page.route; nicht abbrechen.
@@ -139,6 +140,11 @@ export async function installRoutes(page, { tileDelay = 0 } = {}) {
         const name = path.basename(url.pathname);
         const type = name.endsWith(".css") ? "text/css" : "text/javascript";
         return fulfillFile(route, path.join(WWW, "maplibre", name), type);
+      }
+      if (url.pathname.startsWith("/fonts/")) {
+        return glyphsFail
+          ? route.fulfill({ status: 404, body: "" })
+          : route.fulfill({ status: 200, contentType: "application/x-protobuf", body: Buffer.alloc(0) });
       }
       if (url.pathname.startsWith("/tiles/")) {
         await new Promise((resolve) => setTimeout(resolve, tileDelay));
@@ -156,9 +162,9 @@ export async function installRoutes(page, { tileDelay = 0 } = {}) {
 
 // Lädt die Testseite und wartet, bis die Karte Punkte zeigt.
 // Mit holdData wartet die hass-Attrappe auf window.__releaseData(), bevor sie die Punkte liefert.
-export async function openCard(page, { config = {}, points = makePoints(), size = { width: 900, height: 650 }, tileDelay = 0, holdData = false } = {}) {
+export async function openCard(page, { config = {}, points = makePoints(), size = { width: 900, height: 650 }, tileDelay = 0, holdData = false, glyphsFail = false } = {}) {
   await page.setViewportSize({ width: size.width + 40, height: size.height + 40 });
-  await installRoutes(page, { tileDelay });
+  await installRoutes(page, { tileDelay, glyphsFail });
   await page.goto(`${ORIGIN}/harness.html`);
   await page.evaluate(({ config, points, size, holdData }) => window.__setupCard(config, points, size, { holdData }), { config, points, size, holdData });
   if (holdData) {
@@ -170,21 +176,31 @@ export async function openCard(page, { config = {}, points = makePoints(), size 
   return points;
 }
 
-// true, solange die Card noch die eigene Cluster-Berechnung (HTML-Marker, bis 2.0.0) nutzt.
-export async function usesOwnClusters(page) {
-  return page.evaluate(() => Boolean(window.__card._clusterMarkers) && !window.__card._map.getLayer("ortsnetz-clusters"));
-}
-
-// Wartet, bis die Karte nach einer Aktion zur Ruhe gekommen ist.
+// Wartet, bis die Karte nach einer Aktion zur Ruhe gekommen ist: keine Bewegung,
+// Stil und Kacheln geladen, und ein weiterer Frame danach gezeichnet. Bewusst nicht
+// nur auf "idle": Kacheln, die mit Fehler enden (z. B. Schrift nicht ladbar), lösen
+// keinen neuen Frame aus, und dann kommt idle erst beim nächsten Neuzeichnen.
 export async function waitIdle(page) {
   await page.evaluate(() => new Promise((resolve, reject) => {
     const map = window.__card._map;
-    const timer = setTimeout(() => reject(new Error("Karte wird nicht idle")), 15000);
-    map.once("idle", () => { clearTimeout(timer); resolve(); });
-    map.triggerRepaint();
+    const started = performance.now();
+    const frame = () => new Promise((done) => {
+      map.once("render", done);
+      map.triggerRepaint();
+    });
+    const settled = () => !map.isMoving() && map.loaded() && map.areTilesLoaded();
+    (async () => {
+      let calm = 0;
+      while (calm < 2) {
+        if (performance.now() - started > 15000) {
+          const state = { loaded: map.loaded(), tiles: map.areTilesLoaded(), moving: map.isMoving(), zoom: map.getZoom() };
+          throw new Error(`Karte kommt nicht zur Ruhe: ${JSON.stringify(state)}`);
+        }
+        await Promise.race([frame(), new Promise((done) => setTimeout(done, 100))]);
+        calm = settled() ? calm + 1 : 0;
+      }
+    })().then(resolve, reject);
   }));
-  // Ein Frame Puffer für Handler, die selbst auf idle/moveend reagieren.
-  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 }
 
 // Prüft im Browser: Jeder aktivierte Punkt im Blickfeld wird genau einmal
@@ -249,7 +265,34 @@ export async function representation(page) {
       if (feature.properties.point_count === undefined) singles.add(feature.properties.public_id);
     }
 
-    const missing = expected.filter((id) => !singles.has(id) && !clustered.has(id));
+    let missing = expected.filter((id) => !singles.has(id) && !clustered.has(id));
+
+    // Randeffekt jedes Schwerpunkt-Clusterings: Ein Punkt knapp im Blickfeld kann zu
+    // einem Cluster gehören, dessen Kreis ganz außerhalb liegt. Das ist erlaubt, aber nur
+    // dann; jeder andere fehlende Punkt bleibt ein Fehler.
+    const offscreen = {};
+    if (missing.length && nativeClusters) {
+      const source = map.getSource("ortsnetz-points");
+      const seen = new Set();
+      for (const feature of map.querySourceFeatures("ortsnetz-points", { filter: ["has", "point_count"] })) {
+        const id = feature.properties.cluster_id;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        const at = map.project(feature.geometry.coordinates);
+        // Radius wie im Layer plus Rand.
+        const radius = Math.min(36, 14 + 2 * Math.sqrt(feature.properties.point_count)) + 2;
+        // Kreis schneidet das Kartenrechteck nicht: Abstand zum nächsten Rechteckpunkt > Radius.
+        const nearX = Math.min(width, Math.max(0, at.x));
+        const nearY = Math.min(height, Math.max(0, at.y));
+        const outside = Math.hypot(at.x - nearX, at.y - nearY) > radius;
+        if (!outside) continue;
+        for (const leaf of await source.getClusterLeaves(id, Infinity, 0)) {
+          const leafId = leaf.properties.public_id;
+          if (missing.includes(leafId)) offscreen[leafId] = { cluster: [Math.round(at.x), Math.round(at.y)], count: feature.properties.point_count };
+        }
+      }
+      missing = missing.filter((id) => !offscreen[id]);
+    }
     const doubled = expected.filter((id) => (singles.has(id) ? 1 : 0) + (clustered.get(id) || 0) > 1);
     return {
       zoom: Number(map.getZoom().toFixed(2)),
@@ -258,7 +301,9 @@ export async function representation(page) {
       clusters: clusterCount,
       clusterPointSum,
       missing,
+      offscreen: Object.keys(offscreen).length,
       doubled,
+      size: [width, height],
     };
   });
 }

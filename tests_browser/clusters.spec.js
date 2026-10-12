@@ -1,19 +1,7 @@
 // Invariante: Nach jedem Zoomen/Schwenken (nach idle) wird jeder aktivierte
 // Punkt im Blickfeld genau einmal dargestellt – als Einzelpunkt oder in einem Cluster.
 import { expect, test } from "@playwright/test";
-import { openCard, representation, usesOwnClusters, waitIdle } from "./harness.js";
-
-// Bekannte Fehler der eigenen Cluster-Berechnung bis 2.0.0 (in Phase 0 reproduziert):
-// 1. .ortsnetz-cluster{position:relative} überschreibt .maplibregl-marker{position:absolute};
-//    die Marker liegen im Fluss untereinander, nur der erste sitzt richtig, die übrigen
-//    sind nach unten verschoben und meist abgeschnitten.
-// 2. Marker nur im Sichtbereich plus 15 % Rand: in kleinen Karten fehlen Randpunkte.
-// 3. _renderPoints verwirft Daten still, solange Kacheln laden (isStyleLoaded() false).
-// test.fail meldet, falls der alte Pfad diese Tests doch besteht.
-const KNOWN_OLD_PATH = "bekannter Fehler der eigenen Cluster-Berechnung bis 2.0.0";
-async function markKnownFailure(page) {
-  test.fail(await usesOwnClusters(page), KNOWN_OLD_PATH);
-}
+import { openCard, representation, waitIdle } from "./harness.js";
 
 const SIZES = {
   gross: { width: 900, height: 650 },
@@ -42,7 +30,6 @@ for (const [label, size] of Object.entries(SIZES)) {
   test.describe(`Karte ${label} (${size.width}×${size.height})`, () => {
     test("zoomTo 12 → 5 → 12, mehrfach", async ({ page }) => {
       await openCard(page, { size, config: { latitude: 52.52, longitude: 13.4, zoom: 12 } });
-      await markKnownFailure(page);
       await check(page, "Start");
       for (let round = 0; round < 3; round++) {
         for (const zoom of [11, 10, 9, 8, 7, 6, 5]) {
@@ -58,7 +45,6 @@ for (const [label, size] of Object.entries(SIZES)) {
 
     test("Mausrad raus und rein", async ({ page }) => {
       await openCard(page, { size, config: { latitude: 48.14, longitude: 11.58, zoom: 12 } });
-      await markKnownFailure(page);
       const box = await page.locator(".ortsnetz-map").boundingBox();
       await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
       for (let round = 0; round < 2; round++) {
@@ -79,7 +65,6 @@ for (const [label, size] of Object.entries(SIZES)) {
 
     test("fitBounds und Schwenken", async ({ page }) => {
       await openCard(page, { size, config: { latitude: 50.94, longitude: 6.96, zoom: 12 } });
-      await markKnownFailure(page);
       const views = [
         [[5.8, 47.2], [15.1, 55.0]],
         [[13.2, 52.4], [13.6, 52.6]],
@@ -102,7 +87,6 @@ for (const [label, size] of Object.entries(SIZES)) {
 
 test("Legendenfilter und Theme-Wechsel", async ({ page }) => {
   await openCard(page, { size: SIZES.gross, config: { latitude: 51.0, longitude: 10.0, zoom: 6 } });
-  await markKnownFailure(page);
   await check(page, "Start");
   await page.evaluate(() => {
     const input = window.__card.querySelector('.ortsnetz-legend input[data-status="normal"]');
@@ -125,16 +109,49 @@ test("Legendenfilter und Theme-Wechsel", async ({ page }) => {
 test("Diagnosezeile mit debug: true", async ({ page }) => {
   await openCard(page, { size: SIZES.gross, config: { latitude: 51.0, longitude: 10.0, zoom: 6, debug: true } });
   const text = await page.locator(".ortsnetz-debug").textContent();
-  expect(text).toMatch(/^Zoom 6,0 · \d+ Punkte gesetzt · \d+ Cluster · \d+ Einzel sichtbar$/);
   const result = await representation(page);
-  expect(text).toContain(`${result.singles} Einzel sichtbar`);
-  // Die Cluster-Zahl ist nur bei MapLibre-Clustern genau die sichtbare Menge.
-  if (!(await usesOwnClusters(page))) expect(text).toContain(`${result.clusters} Cluster ·`);
+  expect(text).toBe(`Zoom 6,0 · 700 Punkte gesetzt · ${result.clusters} Cluster (${result.clusterPointSum} Punkte) · ${result.singles} Einzel sichtbar`);
+});
+
+test("Cluster zählen je Status genau ihre Punkte, Farbe nach dem schlechtesten", async ({ page }) => {
+  await openCard(page, { size: SIZES.gross, config: { latitude: 51.0, longitude: 10.0, zoom: 6 } });
+  for (const zoom of [5, 7, 9, 11]) {
+    await zoomTo(page, zoom, false);
+    const problems = await page.evaluate(async () => {
+      const map = window.__card._map;
+      const source = map.getSource("ortsnetz-points");
+      const statuses = ["crit_low", "warn_low", "normal", "warn_high", "crit_high"];
+      const out = [];
+      for (const feature of map.queryRenderedFeatures({ layers: ["ortsnetz-clusters"] })) {
+        const p = feature.properties;
+        const leaves = await source.getClusterLeaves(p.cluster_id, Infinity, 0);
+        const counts = Object.fromEntries(statuses.map((s) => [s, 0]));
+        let worst = 0;
+        for (const leaf of leaves) {
+          counts[leaf.properties.status] += 1;
+          worst = Math.max(worst, leaf.properties.rank);
+        }
+        const got = Object.fromEntries(statuses.map((s) => [s, p[s]]));
+        if (JSON.stringify(got) !== JSON.stringify(counts) || p.worst !== worst || p.point_count !== leaves.length) {
+          out.push({ id: p.cluster_id, got, counts, worst: p.worst, expectedWorst: worst });
+        }
+      }
+      return out;
+    });
+    expect(problems, `Zoom ${zoom}`).toEqual([]);
+  }
+});
+
+test("Ist die Schrift für den Zähler nicht ladbar, bleiben alle Punkte sichtbar", async ({ page }) => {
+  await openCard(page, { size: SIZES.gross, config: { latitude: 52.52, longitude: 13.4, zoom: 12 }, glyphsFail: true });
+  for (const zoom of [11, 9, 7, 5, 8, 12]) {
+    await zoomTo(page, zoom, false);
+    await check(page, `Schrift fehlt, Zoom ${zoom}`);
+  }
 });
 
 test("Daten, die eintreffen, während Kacheln laden, werden trotzdem gezeichnet", async ({ page }) => {
   await openCard(page, { size: SIZES.gross, config: { latitude: 51.0, longitude: 10.0, zoom: 6 }, tileDelay: 1500, holdData: true });
-  await markKnownFailure(page);
   // Neue Kacheln anfordern, dann die Daten liefern, solange sie noch laden.
   await page.evaluate(() => window.__card._map.jumpTo({ zoom: 7 }));
   await page.waitForFunction(() => !window.__card._map.isStyleLoaded());
@@ -143,4 +160,40 @@ test("Daten, die eintreffen, während Kacheln laden, werden trotzdem gezeichnet"
   await waitIdle(page);
   const result = await check(page, "nach dem Laden der Kacheln");
   expect(result.expected).toBeGreaterThan(0);
+});
+
+test("Klick auf Cluster zoomt hinein, Tipp neben einen Einzelpunkt öffnet das Popup", async ({ page }) => {
+  await openCard(page, { size: SIZES.gross, config: { latitude: 51.0, longitude: 10.0, zoom: 6 } });
+  const box = await page.locator(".ortsnetz-map").boundingBox();
+
+  // Cluster nahe der Mitte anklicken.
+  const cluster = await page.evaluate(() => {
+    const map = window.__card._map;
+    const canvas = map.getCanvas();
+    const center = { x: canvas.clientWidth / 2, y: canvas.clientHeight / 2 };
+    const features = map.queryRenderedFeatures({ layers: ["ortsnetz-clusters"] });
+    const at = features.map((f) => map.project(f.geometry.coordinates))
+      .filter((p) => p.x > 60 && p.y > 60 && p.x < canvas.clientWidth - 60 && p.y < canvas.clientHeight - 60)
+      .sort((a, b) => Math.hypot(a.x - center.x, a.y - center.y) - Math.hypot(b.x - center.x, b.y - center.y))[0];
+    return { x: at.x, y: at.y, zoom: map.getZoom() };
+  });
+  await page.mouse.click(box.x + cluster.x, box.y + cluster.y);
+  await page.waitForFunction((zoom) => window.__card._map.getZoom() > zoom + 0.5, cluster.zoom);
+  await waitIdle(page);
+
+  // Bis Einzelpunkte sichtbar sind, dann 8 px daneben tippen.
+  await page.evaluate(() => window.__card._map.jumpTo({ center: [13.4, 52.52], zoom: 13 }));
+  await waitIdle(page);
+  const single = await page.evaluate(() => {
+    const map = window.__card._map;
+    const canvas = map.getCanvas();
+    const feature = map.queryRenderedFeatures({ layers: ["ortsnetz-points"] })
+      .map((f) => ({ id: f.properties.public_id, at: map.project(f.geometry.coordinates) }))
+      .find((f) => f.at.x > 40 && f.at.y > 40 && f.at.x < canvas.clientWidth - 40 && f.at.y < canvas.clientHeight - 40);
+    return feature && { x: feature.at.x, y: feature.at.y };
+  });
+  expect(single).toBeTruthy();
+  // 9 px diagonal daneben (knapp 13 px vom Mittelpunkt): außerhalb kleiner Punkte, im Treffbereich.
+  await page.mouse.click(box.x + single.x + 9, box.y + single.y + 9);
+  await expect(page.locator(".maplibregl-popup .popup-title")).toHaveText("Ortsnetz-Messpunkt");
 });
