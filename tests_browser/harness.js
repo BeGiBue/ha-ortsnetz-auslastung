@@ -155,8 +155,15 @@ async function fulfillFile(route, file, contentType) {
   route.fulfill({ status: 200, contentType, body: await readFile(file) });
 }
 
-export async function installRoutes(page, { tileDelay = 0, glyphsFail = false } = {}) {
+// Netz-Zustand für Ausfalltests; page.ortsnetzNet lässt sich im Test ändern
+// (z. B. styleFail = false: Netz wieder da).
+//   styleFail: Anfragen an die OpenFreeMap-Stile werden abgewiesen (wie Pi-hole/offline)
+//   tilesFail: Rasterkacheln antworten mit 404 (erzwingt eine Rasterquelle im Stil)
+export async function installRoutes(page, { tileDelay = 0, glyphsFail = false, styleFail = false, tilesFail = false } = {}) {
+  const net = { tileDelay, glyphsFail, styleFail, tilesFail };
+  page.ortsnetzNet = net;
   await page.route("**/*", async (route) => {
+    const { tileDelay, glyphsFail, styleFail, tilesFail } = net;
     const url = new URL(route.request().url());
     // WebKit leitet auch blob:-URLs (MapLibre-Worker) durch page.route; nicht abbrechen.
     if (url.protocol === "blob:" || url.protocol === "data:") return route.continue();
@@ -174,13 +181,15 @@ export async function installRoutes(page, { tileDelay = 0, glyphsFail = false } 
           : route.fulfill({ status: 200, contentType: "application/x-protobuf", body: Buffer.alloc(0) });
       }
       if (url.pathname.startsWith("/tiles/")) {
+        if (tilesFail) return route.fulfill({ status: 404, body: "" });
         await new Promise((resolve) => setTimeout(resolve, tileDelay));
         return route.fulfill({ status: 200, contentType: "image/png", body: PNG }).catch(() => {});
       }
       return route.fulfill({ status: 404, body: "" });
     }
     if (url.hostname === "tiles.openfreemap.org" && url.pathname.startsWith("/styles/")) {
-      const style = styleFor(url.pathname.split("/").pop(), tileDelay);
+      if (styleFail) return route.abort("connectionrefused");
+      const style = styleFor(url.pathname.split("/").pop(), tileDelay || tilesFail);
       return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(style) });
     }
     return route.abort();
@@ -189,11 +198,13 @@ export async function installRoutes(page, { tileDelay = 0, glyphsFail = false } 
 
 // Lädt die Testseite und wartet, bis die Karte Punkte zeigt.
 // Mit holdData wartet die hass-Attrappe auf window.__releaseData(), bevor sie die Punkte liefert.
-export async function openCard(page, { config = {}, points = makePoints(), size = { width: 900, height: 650 }, tileDelay = 0, holdData = false, holdHistory = false, glyphsFail = false } = {}) {
+// Mit waitReady: false kehrt openCard direkt nach dem Aufbau zurück (Ausfalltests).
+export async function openCard(page, { config = {}, points = makePoints(), size = { width: 900, height: 650 }, tileDelay = 0, holdData = false, holdHistory = false, glyphsFail = false, styleFail = false, tilesFail = false, waitReady = true } = {}) {
   await page.setViewportSize({ width: size.width + 40, height: size.height + 40 });
-  await installRoutes(page, { tileDelay, glyphsFail });
+  await installRoutes(page, { tileDelay, glyphsFail, styleFail, tilesFail });
   await page.goto(`${ORIGIN}/harness.html`);
   await page.evaluate(({ config, points, size, holdData, holdHistory }) => window.__setupCard(config, points, size, { holdData, holdHistory }), { config, points, size, holdData, holdHistory });
+  if (!waitReady) return points;
   if (holdData) {
     await page.waitForFunction(() => window.__card?._map?.loaded());
     return points;
