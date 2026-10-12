@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.2
+
+Stabile Version; enthält alle Änderungen aus 2.0.2-beta.1 und 2.0.2-beta.2 (siehe unten) und zusätzlich:
+
+- Fix: Die Legende lag halb auf dem (i) der Quellenangabe. Legende und Statuszeile halten jetzt Abstand zur Quellenangabe unten rechts, auch wenn sie aufgeklappt ist oder umbricht.
+
 ## 2.0.2-beta.2 (Vorabversion)
 
 **Verhaltensänderung – kooperative Gesten (Standard: an):** Ein Finger scrollt jetzt die Dashboard-Seite, auch wenn er auf der Karte liegt. Die Karte verschiebt und zoomt man mit zwei Fingern; am Computer zoomt das Mausrad nur mit gedrückter Strg-Taste (Mac: ⌘). Ein kurzer Hinweis erklärt das, wenn man es mit einem Finger versucht. Antippen von Punkten und Clustern funktioniert wie bisher, der Inhalt eines Popups lässt sich mit einem Finger scrollen. Wer das alte Verhalten möchte, setzt `cooperative_gestures: false` oder nimmt im Karteneditor das Häkchen bei „Zwei Finger zum Verschieben“ heraus.
