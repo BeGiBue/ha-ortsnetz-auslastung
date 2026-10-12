@@ -393,6 +393,8 @@ class OrtsnetzMapCard extends HTMLElement {
       this._resizeObserver.disconnect();
       this._resizeObserver = null;
     }
+    this._cornerObserver?.disconnect();
+    this._cornerObserver = null;
     if (this._popup) {
       this._popup.remove();
       this._popup = null;
@@ -432,11 +434,11 @@ class OrtsnetzMapCard extends HTMLElement {
           ha-card { display:block; box-sizing:border-box; width:100%; height:100%; min-height:0; overflow:hidden; }
           .ortsnetz-wrap { position:relative; overflow:hidden; border-radius:var(--ha-card-border-radius, 12px); width:100%; height:100%; min-height:168px; }
           .ortsnetz-map { width:100%; height:100%; min-height:168px; background:var(--primary-background-color); }
-          .ortsnetz-status { white-space:pre-line; box-sizing:border-box; max-width:min(60%, calc(100% - 140px)); position:absolute; z-index:5; left:10px; bottom:28px; padding:6px 9px; border-radius:7px; font-size:11px; background:color-mix(in srgb, var(--card-background-color) 92%, transparent); color:var(--primary-text-color); box-shadow:0 1px 4px rgba(0,0,0,.2); pointer-events:none; }
+          .ortsnetz-status { white-space:pre-line; box-sizing:border-box; max-width:min(60%, calc(100% - 140px)); position:absolute; z-index:5; left:10px; bottom:var(--ortsnetz-overlay-bottom, 40px); padding:6px 9px; border-radius:7px; font-size:11px; background:color-mix(in srgb, var(--card-background-color) 92%, transparent); color:var(--primary-text-color); box-shadow:0 1px 4px rgba(0,0,0,.2); pointer-events:none; }
           .ortsnetz-status[hidden] { display:none; }
           .ortsnetz-debug { position:absolute; z-index:5; left:10px; top:10px; margin-left:44px; padding:4px 7px; border-radius:6px; font:11px/1.3 monospace; background:rgba(0,0,0,.72); color:#fff; pointer-events:none; }
           .ortsnetz-debug[hidden] { display:none; }
-          .ortsnetz-legend { position:absolute; z-index:5; right:10px; bottom:28px; max-width:min(240px, calc(100% - 20px)); max-height:calc(100% - 60px); overflow:auto; box-sizing:border-box; padding:8px 11px; border-radius:8px; font-size:12px; line-height:1.35; background:color-mix(in srgb, var(--card-background-color) 94%, transparent); color:var(--primary-text-color); box-shadow:0 1px 6px rgba(0,0,0,.25); }
+          .ortsnetz-legend { position:absolute; z-index:5; right:10px; bottom:var(--ortsnetz-overlay-bottom, 40px); max-width:min(240px, calc(100% - 20px)); max-height:calc(100% - var(--ortsnetz-overlay-bottom, 40px) - 32px); overflow:auto; box-sizing:border-box; padding:8px 11px; border-radius:8px; font-size:12px; line-height:1.35; background:color-mix(in srgb, var(--card-background-color) 94%, transparent); color:var(--primary-text-color); box-shadow:0 1px 6px rgba(0,0,0,.25); }
           .ortsnetz-legend[hidden] { display:none; }
           .legend-head { display:flex; align-items:center; justify-content:space-between; gap:12px; font-weight:700; font-size:13px; cursor:pointer; user-select:none; }
           .legend-toggle { font-weight:400; font-size:16px; line-height:1; opacity:.7; }
@@ -547,12 +549,29 @@ class OrtsnetzMapCard extends HTMLElement {
         this._map?.resize();
       });
       this._resizeObserver.observe(this._mapElement);
+      // Legende und Statuszeile über der Quellenangabe halten, auch wenn sie aufklappt
+      // oder umbricht.
+      const corner = this._mapElement.querySelector(".maplibregl-ctrl-bottom-right");
+      if (corner) {
+        this._cornerObserver = new ResizeObserver(() => this._updateOverlayOffset());
+        this._cornerObserver.observe(corner);
+        this._updateOverlayOffset();
+      }
       setTimeout(() => this._map?.resize(), 250);
     } catch (error) {
       if (generation !== this._generation) return;
       this._setStatus(`Fehler: ${error?.message || error}`);
       console.error("Ortsnetz Map initialization failed", error);
     }
+  }
+
+  // Abstand von Legende und Statuszeile zum unteren Rand: Höhe der Ecke unten rechts
+  // (Quellenangabe samt Rand) plus 6 px, mindestens 28 px.
+  _updateOverlayOffset() {
+    const corner = this._mapElement?.querySelector(".maplibregl-ctrl-bottom-right");
+    const wrap = this.querySelector(".ortsnetz-wrap");
+    if (!corner || !wrap) return;
+    wrap.style.setProperty("--ortsnetz-overlay-bottom", `${Math.max(28, corner.offsetHeight + 6)}px`);
   }
 
   // Bedarfsgesteuert: nur abrufen, solange der Tab sichtbar ist.
