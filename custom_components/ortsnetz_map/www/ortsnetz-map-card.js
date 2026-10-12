@@ -1,4 +1,4 @@
-// Ortsnetz Map Card v2.0.1
+// Ortsnetz Map Card v2.0.2-beta.1
 // MapLibre GL wird von der Integration selbst ausgeliefert (kein externes CDN).
 const MAPLIBRE_VERSION = "5.7.1";
 const MAPLIBRE_BASE = "/ortsnetz_map/maplibre";
@@ -6,6 +6,17 @@ const MAPLIBRE_JS = `${MAPLIBRE_BASE}/maplibre-gl.js?v=${MAPLIBRE_VERSION}`;
 const MAPLIBRE_CSS = `${MAPLIBRE_BASE}/maplibre-gl.css?v=${MAPLIBRE_VERSION}`;
 const OPENFREEMAP_LIGHT_STYLE = "https://tiles.openfreemap.org/styles/liberty";
 const OPENFREEMAP_DARK_STYLE = "https://tiles.openfreemap.org/styles/dark";
+// Lädt der Stil nicht (Pi-hole, offline, App ohne Internet), zeigt die Karte die
+// Punkte auf einem neutralen Hintergrund. Ohne glyphs entfällt der Zähler-Layer.
+const STYLE_TIMEOUT_MS = 10000;
+const BASEMAP_PROBLEM = "Kartenhintergrund nicht erreichbar (tiles.openfreemap.org)";
+function fallbackStyle(dark) {
+  return {
+    version: 8,
+    sources: {},
+    layers: [{ id: "background", type: "background", paint: { "background-color": dark ? "#1f2937" : "#e5e7eb" } }],
+  };
+}
 
 const SOURCE_ID = "ortsnetz-points";
 // Eigene Quelle (gleiche Daten und Cluster-Einstellungen) nur für den Zähler: Kann
@@ -256,7 +267,6 @@ class OrtsnetzMapCard extends HTMLElement {
     this._currentData = null;
     this._initialized = false;
     this._popup = null;
-    this._mapLoaded = false;
     this._lastLoad = 0;
     this._scale = { ...DEFAULT_SCALE };
     this._colors = Object.fromEntries(STATUSES.map((s) => [s.key, s.color]));
@@ -339,7 +349,12 @@ class OrtsnetzMapCard extends HTMLElement {
     this._debugElement = null;
     this._legendElement = null;
     this._initialized = false;
-    this._mapLoaded = false;
+    clearTimeout(this._styleTimer);
+    clearTimeout(this._problemTimer);
+    this._problemTimer = null;
+    this._mapProblem = null;
+    this._styleReady = false;
+    this._fallbackActive = false;
     this._lastThemeDark = null;
     if (clearMarkup) this.innerHTML = "";
   }
@@ -357,7 +372,7 @@ class OrtsnetzMapCard extends HTMLElement {
           ha-card { display:block; box-sizing:border-box; width:100%; height:100%; min-height:0; overflow:hidden; }
           .ortsnetz-wrap { position:relative; overflow:hidden; border-radius:var(--ha-card-border-radius, 12px); width:100%; height:100%; min-height:168px; }
           .ortsnetz-map { width:100%; height:100%; min-height:168px; background:var(--primary-background-color); }
-          .ortsnetz-status { position:absolute; z-index:5; left:10px; bottom:28px; padding:6px 9px; border-radius:7px; font-size:11px; background:color-mix(in srgb, var(--card-background-color) 92%, transparent); color:var(--primary-text-color); box-shadow:0 1px 4px rgba(0,0,0,.2); pointer-events:none; }
+          .ortsnetz-status { white-space:pre-line; box-sizing:border-box; max-width:min(60%, calc(100% - 140px)); position:absolute; z-index:5; left:10px; bottom:28px; padding:6px 9px; border-radius:7px; font-size:11px; background:color-mix(in srgb, var(--card-background-color) 92%, transparent); color:var(--primary-text-color); box-shadow:0 1px 4px rgba(0,0,0,.2); pointer-events:none; }
           .ortsnetz-status[hidden] { display:none; }
           .ortsnetz-debug { position:absolute; z-index:5; left:10px; top:10px; margin-left:44px; padding:4px 7px; border-radius:6px; font:11px/1.3 monospace; background:rgba(0,0,0,.72); color:#fff; pointer-events:none; }
           .ortsnetz-debug[hidden] { display:none; }
@@ -440,10 +455,10 @@ class OrtsnetzMapCard extends HTMLElement {
 
       this._installMapEvents();
       this._installPointInteractions(maplibregl);
-      this._map.on("load", async () => {
-        this._mapLoaded = true;
-        await this._loadMeasurements();
-      });
+      this._watchStyle();
+      // Daten unabhängig von der Karte laden: "load" feuert nicht, wenn Stil oder
+      // Kacheln ausbleiben. Gezeichnet wird, sobald ein Stil da ist (style.load).
+      this._loadMeasurements();
 
       const refreshSeconds = Math.max(60, Number(this._config.refresh_interval) || 300);
       // Bedarfsgesteuert: nur abrufen, solange der Tab sichtbar ist.
@@ -490,12 +505,55 @@ class OrtsnetzMapCard extends HTMLElement {
 
   _installMapEvents() {
     // Start und jeder Stilwechsel: fehlende Quelle/Layer anlegen, Daten nachziehen.
-    this._map.on("style.load", () => this._syncSource());
+    this._map.on("style.load", () => {
+      this._styleReady = true;
+      clearTimeout(this._styleTimer);
+      if (!this._fallbackActive) this._setMapProblem(null);
+      this._syncSource();
+    });
+    // Mit eigenem Handler gibt MapLibre Fehler nicht mehr einzeln auf der Konsole aus.
+    this._map.on("error", (event) => this._handleMapError(event));
+    // Lädt wieder eine Kachel der Basiskarte, ist das Problem vorbei.
+    this._map.on("sourcedata", (event) => {
+      if (event?.tile && !this._fallbackActive && !this._isOwnSource(event.sourceId)) this._setMapProblem(null);
+    });
     if (this._config.debug) this._map.on("idle", () => this._updateDebug());
   }
 
+  _isOwnSource(id) {
+    return id === SOURCE_ID || id === LABEL_SOURCE_ID;
+  }
+
+  // Lädt der Stil nicht innerhalb von STYLE_TIMEOUT_MS, auf den Ersatzstil wechseln.
+  _watchStyle() {
+    this._styleReady = false;
+    clearTimeout(this._styleTimer);
+    this._styleTimer = setTimeout(() => {
+      if (!this._styleReady) this._useFallbackStyle();
+    }, STYLE_TIMEOUT_MS);
+  }
+
+  _handleMapError(event) {
+    // Fehler der eigenen Quellen (z. B. Schrift für den Zähler) betreffen nicht die Basiskarte.
+    if (this._isOwnSource(event?.sourceId)) return;
+    if (!this._styleReady && !event?.sourceId) {
+      this._useFallbackStyle();
+      return;
+    }
+    this._setMapProblem(BASEMAP_PROBLEM);
+  }
+
+  _useFallbackStyle() {
+    if (!this._map || this._fallbackActive) return;
+    this._fallbackActive = true;
+    clearTimeout(this._styleTimer);
+    this._setMapProblem(BASEMAP_PROBLEM);
+    // Eigene Quelle und Layer legt style.load danach neu an (_syncSource).
+    this._map.setStyle(fallbackStyle(Boolean(this._lastThemeDark)), { diff: false });
+  }
+
   _handleVisibility() {
-    if (document.hidden || !this._map || !this._mapLoaded) return;
+    if (document.hidden || !this._map) return;
     const refreshMs = Math.max(60, Number(this._config.refresh_interval) || 300) * 1000;
     if (Date.now() - this._lastLoad >= refreshMs) this._loadMeasurements();
   }
@@ -926,10 +984,16 @@ class OrtsnetzMapCard extends HTMLElement {
     const dark = this._isDarkTheme();
     if (dark === this._lastThemeDark) return;
     this._lastThemeDark = dark;
+    // Auch nach einem Ausfall wieder den echten Stil versuchen.
+    this._fallbackActive = false;
+    this._watchStyle();
     // Eigene Quelle und Layer in den neuen Stil übernehmen; ohne transformStyle
     // entfernt MapLibre sie beim Stil-Diff und die Punkte verschwinden.
-    // Danach legt style.load fehlende Quelle/Layer an (_syncSource).
+    // Danach legt style.load fehlende Quelle/Layer an (_syncSource). diff: false, weil
+    // MapLibre einen per Diff übernommenen Stil ohne style.load einsetzt; dann fehlte
+    // z. B. der Zähler, wenn der neue Stil Glyphen hat und der alte nicht.
     this._map.setStyle(dark ? OPENFREEMAP_DARK_STYLE : OPENFREEMAP_LIGHT_STYLE, {
+      diff: false,
       transformStyle: keepOwnLayers,
     });
   }
@@ -1185,7 +1249,26 @@ class OrtsnetzMapCard extends HTMLElement {
   }
 
   _setStatus(text) {
-    if (this._statusElement) this._statusElement.textContent = text;
+    this._statusText = text;
+    this._renderStatus();
+  }
+
+  // Zweite Zeile der Statusanzeige für Probleme mit der Karte; entprellt, weil
+  // MapLibre je fehlender Kachel einen Fehler meldet.
+  _setMapProblem(text) {
+    if ((this._mapProblem ?? null) === text) return;
+    this._mapProblem = text;
+    if (this._problemTimer) return;
+    this._problemTimer = setTimeout(() => {
+      this._problemTimer = null;
+      this._renderStatus();
+    }, 500);
+  }
+
+  _renderStatus() {
+    if (!this._statusElement) return;
+    const lines = [this._statusText, this._mapProblem].filter(Boolean);
+    this._statusElement.textContent = lines.join("\n");
   }
 
   getCardSize() { return 6; }
