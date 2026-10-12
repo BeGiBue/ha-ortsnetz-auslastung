@@ -158,7 +158,9 @@ async function fulfillFile(route, file, contentType) {
 // Netz-Zustand für Ausfalltests; page.ortsnetzNet lässt sich im Test ändern
 // (z. B. styleFail = false: Netz wieder da).
 //   styleFail: Anfragen an die OpenFreeMap-Stile werden abgewiesen (wie Pi-hole/offline)
-//   tilesFail: Rasterkacheln antworten mit 404 (erzwingt eine Rasterquelle im Stil)
+//   tilesFail: Rasterkacheln scheitern (erzwingt eine Rasterquelle im Stil):
+//              "404" (MapLibre wertet das als "keine Kachel", kein Fehler) oder
+//              "refused" (Verbindung abgewiesen wie bei Pi-hole/offline)
 export async function installRoutes(page, { tileDelay = 0, glyphsFail = false, styleFail = false, tilesFail = false } = {}) {
   const net = { tileDelay, glyphsFail, styleFail, tilesFail };
   page.ortsnetzNet = net;
@@ -181,6 +183,7 @@ export async function installRoutes(page, { tileDelay = 0, glyphsFail = false, s
           : route.fulfill({ status: 200, contentType: "application/x-protobuf", body: Buffer.alloc(0) });
       }
       if (url.pathname.startsWith("/tiles/")) {
+        if (tilesFail === "refused") return route.abort("connectionrefused");
         if (tilesFail) return route.fulfill({ status: 404, body: "" });
         await new Promise((resolve) => setTimeout(resolve, tileDelay));
         return route.fulfill({ status: 200, contentType: "image/png", body: PNG }).catch(() => {});

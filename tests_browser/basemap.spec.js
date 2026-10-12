@@ -63,20 +63,36 @@ test("Stil nicht erreichbar: Punkte auf neutralem Hintergrund, Erklärung, spät
 });
 
 test("Kacheln liefern 404: Daten werden trotzdem geladen und gezeichnet", async ({ page }) => {
+  // MapLibre wertet 404 als "hier gibt es keine Kachel" und meldet keinen Fehler;
+  // "load" feuert dann in Chromium trotzdem nicht. Die Daten müssen dennoch kommen.
+  await openCard(page, { size: SIZE, config: CONFIG, tilesFail: "404", waitReady: false });
+  await waitForPoints(page);
+  await expectAllShown(page, "Kacheln 404");
+  await expect(page.locator(".ortsnetz-status")).toContainText("700 Messpunkte");
+});
+
+test("Kacheln nicht erreichbar: Daten, Erklärung, keine Konsolenflut", async ({ page }) => {
   const messages = [];
   page.on("console", (message) => { if (message.type() === "error") messages.push(message.text()); });
-  await openCard(page, { size: SIZE, config: CONFIG, tilesFail: true, waitReady: false });
+  await openCard(page, { size: SIZE, config: CONFIG, tilesFail: "refused", waitReady: false });
   await waitForPoints(page);
 
   await expectAllShown(page, "Kacheln fehlen");
   await expect(page.locator(".ortsnetz-status")).toContainText("Kartenhintergrund nicht erreichbar");
   await expect(page.locator(".ortsnetz-status")).toContainText("700 Messpunkte");
 
-  // Zoomen lädt weitere (fehlende) Kacheln: keine Konsolenflut von MapLibre.
+  // Zoomen lädt weitere (fehlende) Kacheln: MapLibre schreibt dazu nichts auf die Konsole.
   for (const zoom of [7, 8, 9]) {
     await page.evaluate((zoom) => window.__card._map.jumpTo({ zoom }), zoom);
     await waitIdle(page);
   }
+  await expectAllShown(page, "nach dem Zoomen");
   const fromMapLibre = messages.filter((text) => !text.startsWith("Failed to load resource"));
   expect(fromMapLibre).toEqual([]);
+
+  // Netz wieder da: sobald eine Kachel lädt, verschwindet der Hinweis.
+  page.ortsnetzNet.tilesFail = false;
+  await page.evaluate(() => window.__card._map.jumpTo({ zoom: 10 }));
+  await waitIdle(page);
+  await expect(page.locator(".ortsnetz-status")).not.toContainText("nicht erreichbar");
 });
