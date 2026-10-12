@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.1.0-beta.1 (Vorabversion)
+
+Card:
+- Cluster sind wieder Tortendiagramme: Jedes Stück zeigt den Anteil eines Status, in der Mitte steht die Anzahl der Standorte. Grundlage sind die Zähler je Status, die MapLibre seit 2.0.1 für jeden Cluster mitrechnet.
+- Die Torten sind HTML-Marker über dem Cluster-Kreis. Sie werden aus den gerade gezeichneten Clustern abgeleitet (in jedem Frame), behalten über ihre `cluster_id` ihr Element und folgen der Karte bei jeder Bewegung; Zahlen und Farben werden nur bei Änderungen neu gezeichnet. Das Marker-Element selbst bekommt keine eigene CSS-Position (Ursache des Verschwindens in 2.0.0).
+- Klick, Antippen oder Enter/Leertaste auf eine Torte zoomen hinein. Torten sind per Tab erreichbar und für Screenreader beschriftet (z. B. „Cluster mit 12 Messpunkten: 5 unter 207 V, 7 218 – 242 V. Antippen zum Hineinzoomen.“).
+- Rückfallebene: Die Konstante `CLUSTER_PIES` in der Card (bzw. `clusterPies` an der Klasse) auf `false` schaltet zurück auf einfarbige Kreise mit Zahl.
+- Die Zahl kommt jetzt aus der Torte statt aus einer Schrift der Basiskarte; der Zähler-Layer und seine eigene Quelle entfallen mit Torten.
+
 ## 2.0.2
 
 Stabile Version; enthält alle Änderungen aus 2.0.2-beta.1 und 2.0.2-beta.2 (siehe unten) und zusätzlich:

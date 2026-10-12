@@ -114,11 +114,14 @@ class FakeMap {
   }
 }
 
+const markers = [];
 class FakeMarker {
-  constructor({ element }) { this.element = element; }
-  setLngLat() { return this; }
+  constructor({ element }) { this.element = element; this.removed = false; markers.push(this); }
+  setLngLat(at) { this.lngLat = at; return this; }
+  getLngLat() { return this.lngLat; }
+  getElement() { return this.element; }
   addTo() { return this; }
-  remove() {}
+  remove() { this.removed = true; }
 }
 
 const fakeMapLibre = {
@@ -158,6 +161,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   maps.length = 0;
+  markers.length = 0;
   delete window.maplibregl;
   document.head.querySelectorAll("script, link").forEach((element) => element.remove());
   document.body.innerHTML = "";
@@ -290,7 +294,9 @@ describe("Cluster", () => {
     expect(ranks).toEqual({ crit_low: 4, crit_high: 3, warn_low: 2, warn_high: 1, normal: 0 });
   });
 
-  it("zeichnet Cluster-Kreis, Zähler und Einzelpunkte in dieser Reihenfolge", () => {
+  it("zeichnet ohne Torten Cluster-Kreis, Zähler und Einzelpunkte in dieser Reihenfolge", () => {
+    const Card = customElements.get("ortsnetz-map-card");
+    Card.clusterPies = false;
     const { card, map } = cardWithMap();
     card._renderPoints({ points: [POINT] });
     expect(map.layers.map((layer) => layer.id)).toEqual(["ortsnetz-clusters", "ortsnetz-cluster-count", "ortsnetz-points"]);
@@ -304,11 +310,14 @@ describe("Cluster", () => {
     expect(map.sources["ortsnetz-cluster-labels"].data).toBe(map.sources["ortsnetz-points"].data);
     expect(circle.source).toBe("ortsnetz-points");
     expect(points.source).toBe("ortsnetz-points");
+    Card.clusterPies = true;
     expect(points.filter).toEqual(["!", ["has", "point_count"]]);
   });
 
   it("lässt den Zähler weg, wenn der Stil keine Glyphen hat", () => {
+    customElements.get("ortsnetz-map-card").clusterPies = false;
     const { card, map } = cardWithMap({ glyphs: false });
+    customElements.get("ortsnetz-map-card").clusterPies = true;
     card._renderPoints({ points: [POINT] });
     expect(map.layers.map((layer) => layer.id)).toEqual(["ortsnetz-clusters", "ortsnetz-points"]);
     expect(map.sources["ortsnetz-cluster-labels"]).toBeUndefined();
@@ -331,6 +340,116 @@ describe("Cluster", () => {
     card._enabled.delete("normal");
     card._renderPoints({ points: [POINT, { ...POINT, public_id: "x", l1_v: 200 }] });
     expect(map.sources["ortsnetz-points"].data.features.map((f) => f.properties.status)).toEqual(["crit_low"]);
+  });
+});
+
+describe("Cluster als Tortendiagramme", () => {
+  const cluster = (id, counts, coordinates = [13, 52]) => {
+    const total = Object.values(counts).reduce((a, b) => a + b, 0);
+    return {
+      layer: { id: "ortsnetz-clusters" },
+      geometry: { type: "Point", coordinates },
+      properties: { cluster_id: id, point_count: total, crit_low: 0, warn_low: 0, normal: 0, warn_high: 0, crit_high: 0, ...counts },
+    };
+  };
+  const slices = (element) => [...element.querySelectorAll("[data-status]")]
+    .map((el) => [el.dataset.status, Number(el.dataset.count)]);
+
+  it("legt mit Torten keinen Zähler-Layer an (die Torte zeigt die Zahl)", () => {
+    const { card, map } = cardWithMap();
+    card._renderPoints({ points: [POINT] });
+    expect(map.layers.map((layer) => layer.id)).toEqual(["ortsnetz-clusters", "ortsnetz-points"]);
+    expect(map.sources["ortsnetz-cluster-labels"]).toBeUndefined();
+  });
+
+  it("zeichnet je Status ein Tortenstück in der Reihenfolge der Legende, mit Zahl", () => {
+    const card = newCard();
+    const element = card._clusterElement({ point_count: 12, crit_low: 5, warn_low: 0, normal: 7, warn_high: 0, crit_high: 0 });
+    expect(slices(element)).toEqual([["crit_low", 5], ["normal", 7]]);
+    expect(element.textContent).toContain("12");
+    const paths = element.querySelectorAll("path[data-status]");
+    expect(paths).toHaveLength(2);
+    // 5/12 und 7/12: das kleinere Stück ist kein großer Bogen, das größere schon.
+    expect(paths[0].getAttribute("d")).toMatch(/A[\d.]+ [\d.]+ 0 0 1/);
+    expect(paths[1].getAttribute("d")).toMatch(/A[\d.]+ [\d.]+ 0 1 1/);
+  });
+
+  it("zeichnet bei nur einem Status einen vollen Kreis", () => {
+    const element = newCard()._clusterElement({ point_count: 4, crit_low: 0, warn_low: 0, normal: 4, warn_high: 0, crit_high: 0 });
+    expect(element.querySelectorAll("circle[data-status]")).toHaveLength(1);
+    expect(slices(element)).toEqual([["normal", 4]]);
+  });
+
+  it("ist per Tastatur bedienbar und beschriftet", async () => {
+    const { card, map } = cardWithMap();
+    card._renderPoints({ points: [POINT] });
+    map.renderedFeatures = [cluster(7, { crit_low: 2, normal: 3 })];
+    map.clusterExpansionZoom = 10;
+    card._updatePies();
+    const element = markers[0].element;
+    const button = element.querySelector('[role="button"]');
+    expect(button.getAttribute("tabindex")).toBe("0");
+    expect(button.getAttribute("aria-label")).toBe("Cluster mit 5 Messpunkten: 2 unter 207 V, 3 218 – 242 V. Antippen zum Hineinzoomen.");
+    button.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await flush();
+    expect(map.easeToCalls.at(-1)).toEqual({ center: [13, 52], zoom: 10 });
+  });
+
+  it("übernimmt nur geprüfte Farben", () => {
+    const card = newCard();
+    card._applyScale({ scale: { colors: ['red" onclick="alert(1)', "#222222", "#333333", "#444444", "#555555"] } });
+    const element = card._clusterElement({ point_count: 2, crit_low: 1, warn_low: 0, normal: 1, warn_high: 0, crit_high: 0 });
+    expect(element.innerHTML).not.toContain("onclick");
+    expect(element.querySelector('[data-status="crit_low"]').getAttribute("fill")).toBe("#1d4ed8");
+  });
+
+  it("behält Marker mit gleicher cluster_id, aktualisiert sie bei neuen Zahlen und entfernt verschwundene", () => {
+    const { card, map } = cardWithMap();
+    card._renderPoints({ points: [POINT] });
+    map.renderedFeatures = [cluster(1, { normal: 3 }), cluster(2, { crit_high: 2 }, [14, 53])];
+    card._updatePies();
+    expect(markers).toHaveLength(2);
+    const [first, second] = markers;
+    expect(first.lngLat).toEqual([13, 52]);
+
+    map.renderedFeatures = [cluster(1, { normal: 3 }), cluster(2, { crit_high: 2 }, [14, 53])];
+    card._updatePies();
+    expect(markers).toHaveLength(2);
+
+    const before = first.element.querySelector("svg");
+    map.renderedFeatures = [cluster(1, { normal: 2, crit_low: 1 })];
+    card._updatePies();
+    expect(markers).toHaveLength(2);
+    expect(first.removed).toBe(false);
+    expect(first.element.querySelector("svg")).not.toBe(before);
+    expect(slices(first.element)).toEqual([["crit_low", 1], ["normal", 2]]);
+    expect(second.removed).toBe(true);
+  });
+
+  it("lässt die Marker stehen, solange der Cluster-Layer fehlt (Stilwechsel)", () => {
+    const { card, map } = cardWithMap();
+    card._renderPoints({ points: [POINT] });
+    map.renderedFeatures = [cluster(1, { normal: 3 })];
+    card._updatePies();
+    map.layers = [];
+    map.renderedFeatures = [];
+    card._updatePies();
+    expect(markers[0].removed).toBe(false);
+  });
+
+  it("zeichnet ohne Torten (Rückfallebene) keine Marker", () => {
+    const Card = customElements.get("ortsnetz-map-card");
+    Card.clusterPies = false;
+    try {
+      const { card, map } = cardWithMap();
+      card._renderPoints({ points: [POINT] });
+      map.renderedFeatures = [cluster(1, { normal: 3 })];
+      card._updatePies();
+      expect(markers).toHaveLength(0);
+      expect(map.getLayer("ortsnetz-cluster-count")).toBeDefined();
+    } finally {
+      Card.clusterPies = true;
+    }
   });
 });
 
@@ -362,7 +481,8 @@ describe("Rendern", () => {
     expect(source.setDataCalls).toBe(calls);
     card._renderPoints({ points: [{ ...POINT, l1_v: 250 }] });
     expect(source.setDataCalls).toBe(calls + 1);
-    expect(map.sources["ortsnetz-cluster-labels"].data).toBe(source.data);
+    // Mit Torten gibt es keine Zähler-Quelle (siehe Rückfallebene).
+    expect(map.sources["ortsnetz-cluster-labels"]).toBeUndefined();
     card._renderPoints({ points: [{ ...POINT, l1_v: 250, stale: true }] });
     expect(source.setDataCalls).toBe(calls + 2);
   });

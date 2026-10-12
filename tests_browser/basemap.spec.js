@@ -58,7 +58,14 @@ test("Stil nicht erreichbar: Punkte auf neutralem Hintergrund, Erklärung, spät
   await page.waitForFunction(() => window.__card._map.getStyle()?.layers?.some((l) => l.paint?.["background-color"] === "#ddd"));
   await waitIdle(page);
   await expectAllShown(page, "echter Stil zurück");
-  expect(await page.evaluate(() => Boolean(window.__card._map.getLayer("ortsnetz-cluster-count")))).toBe(true);
+  // Zahl im Cluster: mit Torten in der Torte, auf der Rückfallebene im Zähler-Layer.
+  const counts = await page.evaluate(() => ({
+    pies: customElements.get("ortsnetz-map-card").clusterPies,
+    layer: Boolean(window.__card._map.getLayer("ortsnetz-cluster-count")),
+    shown: window.__card.querySelectorAll(".ortsnetz-pie span").length,
+  }));
+  if (counts.pies) expect(counts.shown).toBeGreaterThan(0);
+  else expect(counts.layer).toBe(true);
   await expect(page.locator(".ortsnetz-status")).not.toContainText("nicht erreichbar");
 });
 
