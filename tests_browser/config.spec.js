@@ -39,3 +39,30 @@ test("Quellenangabe bleibt im Ersatzstil sichtbar", async ({ page }) => {
   await waitIdle(page);
   await expect(page.locator(".maplibregl-ctrl-attrib")).toBeVisible();
 });
+
+// Legende und Statuszeile dürfen das (i) bzw. die aufgeklappte Quellenangabe nicht verdecken.
+for (const size of [{ width: 380, height: 300 }, { width: 900, height: 650 }]) {
+  test(`Legende und Status überdecken die Quellenangabe nicht (${size.width}×${size.height})`, async ({ page }) => {
+    await openCard(page, { size, config: { latitude: 51.0, longitude: 10.0, zoom: 6 } });
+    const overlaps = () => page.evaluate(() => {
+      const card = window.__card;
+      const attrib = card.querySelector(".maplibregl-ctrl-attrib").getBoundingClientRect();
+      const hit = (el) => {
+        const r = el.getBoundingClientRect();
+        return r.left < attrib.right && r.right > attrib.left && r.top < attrib.bottom && r.bottom > attrib.top;
+      };
+      return {
+        expanded: card.querySelector(".maplibregl-ctrl-attrib").classList.contains("maplibregl-compact-show"),
+        legend: hit(card.querySelector(".ortsnetz-legend")),
+        status: hit(card.querySelector(".ortsnetz-status")),
+      };
+    });
+    const toggle = page.locator(".maplibregl-ctrl-attrib-button");
+    for (let i = 0; i < 2; i++) {
+      await page.waitForTimeout(200);
+      const state = await overlaps();
+      expect({ legend: state.legend, status: state.status }, `aufgeklappt: ${state.expanded}`).toEqual({ legend: false, status: false });
+      await toggle.click({ force: true });
+    }
+  });
+}

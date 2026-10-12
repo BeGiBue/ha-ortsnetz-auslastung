@@ -22,8 +22,15 @@ const STYLES = {
 // 1×1-PNG für die langsamen Kacheln (Option tileDelay).
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGM4c+bMfwAIMANkhLK+mwAAAABJRU5ErkJggg==", "base64");
 
+// Quellenangabe wie bei OpenFreeMap (kommt dort zur Laufzeit aus der TileJSON; der
+// genaue Text ist von hier nicht abrufbar, Länge und Aufbau sind realistisch).
+const ATTRIBUTION = '<a href="https://openfreemap.org" target="_blank">OpenFreeMap</a> ' +
+  '<a href="https://www.openmaptiles.org/" target="_blank">&copy; OpenMapTiles</a> ' +
+  'Data from <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a>';
+
 function styleFor(name, tileDelay) {
   const style = structuredClone(STYLES[name] ?? STYLES.liberty);
+  style.sources.basemap = { type: "geojson", data: { type: "FeatureCollection", features: [] }, attribution: ATTRIBUTION };
   if (tileDelay) {
     // Simuliert eine Basiskarte, deren Kacheln (wie im Netz) erst nach einer Weile kommen.
     style.sources.raster = { type: "raster", tiles: [`${ORIGIN}/tiles/{z}/{x}/{y}.png`], tileSize: 256 };
