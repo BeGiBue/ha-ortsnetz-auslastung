@@ -81,8 +81,20 @@ const DEFAULT_CONFIG = {
   refresh_interval: 300,
   show_status: true,
   show_legend: true,
+  // Ein Finger scrollt die Seite, zwei Finger bewegen die Karte (Strg + Mausrad zoomt).
+  cooperative_gestures: true,
   debug: false,
 };
+
+// Hinweistexte der kooperativen Gesten (Schlüssel aus MapLibre 5.7.1).
+const COOPERATIVE_LOCALE = {
+  "CooperativeGesturesHandler.WindowsHelpText": "Strg + Mausrad zum Zoomen der Karte",
+  "CooperativeGesturesHandler.MacHelpText": "⌘ + Mausrad zum Zoomen der Karte",
+  "CooperativeGesturesHandler.MobileHelpText": "Karte mit zwei Fingern bewegen",
+};
+
+// Nach einem fehlgeschlagenen Abruf erneut versuchen (Sekunden), danach nur im Intervall.
+const RETRY_DELAYS = [15, 30, 60];
 
 let mapLibrePromise;
 
@@ -274,6 +286,10 @@ class OrtsnetzMapCard extends HTMLElement {
     this._legendOpen = true;
     this._maplibregl = null;
     this._onVisibilityChange = () => this._handleVisibility();
+    // Nach Wiederverbindung des WebSockets sofort neu abrufen.
+    this._onReconnect = () => {
+      if (this._map) this._loadMeasurements();
+    };
     // Zuletzt berechnete Features (immer aktuell) und der Stand in der Kartenquelle.
     this._allFeatures = [];
     this._featuresHash = null;
@@ -294,6 +310,7 @@ class OrtsnetzMapCard extends HTMLElement {
     merged.show_status = merged.show_status !== false;
     merged.show_legend = merged.show_legend !== false;
     merged.debug = merged.debug === true;
+    merged.cooperative_gestures = merged.cooperative_gestures !== false;
     this._config = merged;
 
     if (this._initialized && this.isConnected && this._hass) this._reinitialize();
@@ -306,6 +323,7 @@ class OrtsnetzMapCard extends HTMLElement {
     if (firstSet && this.isConnected) {
       this._initialize();
     } else if (this._map) {
+      this._watchConnection();
       this._applyTheme();
     }
   }
@@ -330,6 +348,11 @@ class OrtsnetzMapCard extends HTMLElement {
       this._refreshTimer = null;
     }
     document.removeEventListener("visibilitychange", this._onVisibilityChange);
+    clearTimeout(this._retryTimer);
+    this._retryTimer = null;
+    this._retryCount = 0;
+    this._connection?.removeEventListener?.("ready", this._onReconnect);
+    this._connection = null;
     if (this._resizeObserver) {
       this._resizeObserver.disconnect();
       this._resizeObserver = null;
@@ -392,6 +415,8 @@ class OrtsnetzMapCard extends HTMLElement {
           .legend-size { margin-top:8px; }
           /* Popup über Legende, Statuszeile (z-index 5) und Zoom-Schaltflächen. */
           .maplibregl-popup { z-index:6; }
+          /* Hinweis der kooperativen Gesten unter Legende und Statuszeile (z-index 5). */
+          .maplibregl-cooperative-gesture-screen { z-index:4; }
           .maplibregl-popup-content { background:var(--card-background-color); color:var(--primary-text-color); border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,.25); }
           .maplibregl-popup-anchor-bottom .maplibregl-popup-tip { border-top-color:var(--card-background-color); }
           .maplibregl-popup-anchor-top .maplibregl-popup-tip { border-bottom-color:var(--card-background-color); }
@@ -449,13 +474,21 @@ class OrtsnetzMapCard extends HTMLElement {
         center: this._initialCenter(),
         zoom: Number(this._config.zoom),
         attributionControl: true,
+        // Kein Drehen oder Kippen: ohne Kompass ließe sich das nicht zurücksetzen.
+        dragRotate: false,
+        pitchWithRotate: false,
+        touchPitch: false,
+        ...(this._config.cooperative_gestures ? { cooperativeGestures: true, locale: COOPERATIVE_LOCALE } : {}),
       });
+      this._map.touchZoomRotate.disableRotation();
+      this._map.keyboard.disableRotation();
 
       this._map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-left");
 
       this._installMapEvents();
       this._installPointInteractions(maplibregl);
       this._watchStyle();
+      this._watchConnection();
       // Daten unabhängig von der Karte laden: "load" feuert nicht, wenn Stil oder
       // Kacheln ausbleiben. Gezeichnet wird, sobald ein Stil da ist (style.load).
       this._loadMeasurements();
@@ -550,6 +583,16 @@ class OrtsnetzMapCard extends HTMLElement {
     this._setMapProblem(BASEMAP_PROBLEM);
     // Eigene Quelle und Layer legt style.load danach neu an (_syncSource).
     this._map.setStyle(fallbackStyle(Boolean(this._lastThemeDark)), { diff: false });
+  }
+
+  // Beim WebSocket von Home Assistant für "ready" (Wiederverbindung) anmelden; wechselt
+  // die Verbindung, beim alten Objekt abmelden.
+  _watchConnection() {
+    const connection = this._hass?.connection;
+    if (connection === this._connection) return;
+    this._connection?.removeEventListener?.("ready", this._onReconnect);
+    this._connection = connection ?? null;
+    this._connection?.addEventListener?.("ready", this._onReconnect);
   }
 
   _handleVisibility() {
@@ -1002,7 +1045,8 @@ class OrtsnetzMapCard extends HTMLElement {
 
   async _loadMeasurements() {
     if (!this._hass?.connection) return;
-    this._setStatus("Lade Messwerte …");
+    // "Lade …" nur beim ersten Laden; danach bleibt der letzte Stand sichtbar.
+    if (!this._currentData) this._setStatus("Lade Messwerte …");
     // Nur die zuletzt gestartete Anfrage darf die Anzeige ändern.
     const request = ++this._loadRequest;
     const generation = this._generation;
@@ -1015,13 +1059,34 @@ class OrtsnetzMapCard extends HTMLElement {
       this._applyScale(data);
       this._renderLegend();
       this._renderPoints(data);
-      const time = new Date().toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
-      this._setStatus(`${data.points?.length ?? 0} Messpunkte · ${time}`);
+      this._dataTime = new Date().toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+      this._setStatus(`${data.points?.length ?? 0} Messpunkte · ${this._dataTime}`);
+      this._retryCount = 0;
+      clearTimeout(this._retryTimer);
+      this._retryTimer = null;
     } catch (error) {
       if (request !== this._loadRequest || generation !== this._generation) return;
       console.error("Could not load Ortsnetz points", error);
-      this._setStatus(loadErrorText(error));
+      this._setStatus(
+        this._currentData ? `Aktualisierung fehlgeschlagen, zeige Stand ${this._dataTime}` : loadErrorText(error),
+      );
+      this._scheduleRetry();
     }
+  }
+
+  // Nach einem Fehler nach 15, 30 und 60 s erneut versuchen (nur bei sichtbarem Tab);
+  // danach übernimmt wieder das normale Intervall. Erfolg setzt die Zählung zurück.
+  _scheduleRetry() {
+    if (!this._map || this._retryTimer) return;
+    const delay = RETRY_DELAYS[this._retryCount ?? 0];
+    if (delay === undefined) return;
+    this._retryCount = (this._retryCount ?? 0) + 1;
+    const generation = this._generation;
+    this._retryTimer = setTimeout(() => {
+      this._retryTimer = null;
+      if (generation !== this._generation || document.hidden) return;
+      this._loadMeasurements();
+    }, delay * 1000);
   }
 
   _applyScale(data) {
@@ -1288,7 +1353,7 @@ class OrtsnetzMapCard extends HTMLElement {
   static getConfigElement() { return document.createElement("ortsnetz-map-card-editor"); }
 
   static getStubConfig() {
-    return { zoom: 10, phase: "auto", refresh_interval: 300, show_status: true, show_legend: true };
+    return { zoom: 10, phase: "auto", refresh_interval: 300, show_status: true, show_legend: true, cooperative_gestures: true };
   }
 }
 
@@ -1357,6 +1422,8 @@ class OrtsnetzMapCardEditor extends HTMLElement {
           </div>
           <label class="check"><input data-key="show_status" type="checkbox" ${this._config.show_status !== false ? "checked" : ""}>Status unten links anzeigen</label>
           <label class="check"><input data-key="show_legend" type="checkbox" ${this._config.show_legend !== false ? "checked" : ""}>Legende unten rechts anzeigen</label>
+          <label class="check"><input data-key="cooperative_gestures" type="checkbox" ${this._config.cooperative_gestures !== false ? "checked" : ""}>Zwei Finger zum Verschieben (Seite lässt sich über die Karte scrollen)</label>
+          <div class="hint">Angehakt bewegt ein Finger die Seite statt der Karte; die Karte verschiebt und zoomt man mit zwei Fingern, am Computer zoomt man mit Strg (Mac: ⌘) + Mausrad.</div>
           <div class="hint">Breite und Höhe werden ausschließlich über Home Assistants Tab „Layout“ eingestellt. Die Karte füllt den dort zugewiesenen Bereich automatisch vollständig aus.</div>
         </div>
         <div class="section">
@@ -1389,7 +1456,7 @@ class OrtsnetzMapCardEditor extends HTMLElement {
         next.latitude = Number(this._hass?.config?.latitude ?? 0);
         next.longitude = Number(this._hass?.config?.longitude ?? 0);
       }
-    } else if (key === "show_status" || key === "show_legend") {
+    } else if (["show_status", "show_legend", "cooperative_gestures"].includes(key)) {
       next[key] = target.checked;
     } else if (["zoom", "refresh_interval", "latitude", "longitude"].includes(key)) {
       next[key] = Number(target.value);

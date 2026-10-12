@@ -129,18 +129,26 @@ test("Antippen von Cluster und Punkt funktioniert mit kooperativen Gesten", asyn
 
 test("Hinweis für zwei Finger: deutsch und unter Legende und Statuszeile", async ({ page }) => {
   await openCard(page, { size: SMALL, config: CONFIG });
-  await gesture(page, steps([[190, 150]], [[190, 60]]));
-  const overlay = await page.evaluate(() => {
+  // MapLibre zeigt den Hinweis nur 100 ms per Klasse an (danach blendet CSS aus):
+  // im Moment der blockierten Geste prüfen.
+  await page.evaluate(() => {
     const card = window.__card;
-    const screen = card.querySelector(".maplibregl-cooperative-gesture-screen");
-    const z = (el) => Number(getComputedStyle(el).zIndex);
-    return {
-      shown: screen.classList.contains("maplibregl-show"),
-      mobile: screen.querySelector(".maplibregl-mobile-message")?.textContent,
-      desktop: screen.querySelector(".maplibregl-desktop-message")?.textContent,
-      below: z(screen) < z(card.querySelector(".ortsnetz-legend")) && z(screen) < z(card.querySelector(".ortsnetz-status")),
-    };
+    window.__overlay = null;
+    // MapLibre feuert das Ereignis und setzt die Klasse direkt danach: einen Mikrotask warten.
+    card._map.once("cooperativegestureprevented", () => queueMicrotask(() => {
+      const screen = card.querySelector(".maplibregl-cooperative-gesture-screen");
+      const z = (el) => Number(getComputedStyle(el).zIndex);
+      window.__overlay = {
+        shown: screen.classList.contains("maplibregl-show"),
+        mobile: screen.querySelector(".maplibregl-mobile-message")?.textContent,
+        desktop: screen.querySelector(".maplibregl-desktop-message")?.textContent,
+        below: z(screen) < z(card.querySelector(".ortsnetz-legend")) && z(screen) < z(card.querySelector(".ortsnetz-status")),
+      };
+    }));
   });
+  await gesture(page, steps([[190, 150]], [[190, 60]]));
+  const overlay = await page.evaluate(() => window.__overlay);
+  expect(overlay).not.toBeNull();
   expect(overlay.shown).toBe(true);
   expect(overlay.mobile).toBe("Karte mit zwei Fingern bewegen");
   expect(overlay.desktop).toMatch(/^(Strg|⌘) \+ Mausrad zum Zoomen der Karte$/);

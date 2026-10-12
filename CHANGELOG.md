@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.0.2-beta.2 (Vorabversion)
+
+**Verhaltensänderung – kooperative Gesten (Standard: an):** Ein Finger scrollt jetzt die Dashboard-Seite, auch wenn er auf der Karte liegt. Die Karte verschiebt und zoomt man mit zwei Fingern; am Computer zoomt das Mausrad nur mit gedrückter Strg-Taste (Mac: ⌘). Ein kurzer Hinweis erklärt das, wenn man es mit einem Finger versucht. Antippen von Punkten und Clustern funktioniert wie bisher, der Inhalt eines Popups lässt sich mit einem Finger scrollen. Wer das alte Verhalten möchte, setzt `cooperative_gestures: false` oder nimmt im Karteneditor das Häkchen bei „Zwei Finger zum Verschieben“ heraus.
+
+Card:
+- Drehen und Kippen der Karte sind gesperrt (Zwei-Finger-Drehung, Rechtsklick-Ziehen, Tastatur). Ohne Kompass ließ sich eine gedrehte Karte nicht zurücksetzen.
+- Schlägt der Abruf der Messwerte fehl, versucht die Card es nach 15, 30 und 60 Sekunden erneut (nur bei sichtbarem Tab), danach wieder im normalen Intervall. Nach einer Wiederverbindung zu Home Assistant wird sofort abgerufen.
+- „Lade Messwerte …“ erscheint nur noch beim ersten Laden. Scheitert später eine Aktualisierung, bleibt der letzte Stand sichtbar („Aktualisierung fehlgeschlagen, zeige Stand 09:40“).
+
 ## 2.0.2-beta.1 (Vorabversion)
 
 Card:
