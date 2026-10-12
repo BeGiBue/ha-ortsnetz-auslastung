@@ -1076,7 +1076,9 @@ describe("Quellenangabe", () => {
     card.hass = makeHass();
     document.body.appendChild(card);
     await flush();
-    expect(maps[0].options.attributionControl).toEqual({ compact: true });
+    expect(maps[0].options.attributionControl).toMatchObject({ compact: true });
+    // Ohne eigenen Eintrag wäre die Angabe im Ersatzstil (ohne Quellen) leer und ausgeblendet.
+    expect(maps[0].options.attributionControl.customAttribution).toContain("maplibre.org");
   });
 });
 
