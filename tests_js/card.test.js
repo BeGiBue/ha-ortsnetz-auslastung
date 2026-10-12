@@ -12,37 +12,91 @@ class FakeMap {
     this.options = options;
     this.handlers = {};
     this.zoom = options.zoom;
+    this.center = options.center;
     this.sources = {};
     this.layers = [];
+    this.paint = {};
     this.removed = false;
     this.setStyleCalls = [];
+    this.easeToCalls = [];
+    // Wie MapLibre: nach setData/setStyle ist der Stil "nicht geladen", bis idle feuert.
+    this.styleLoaded = false;
+    this.autoStyleLoaded = null; // fester Wert für isStyleLoaded(), sonst null
+    this.renderedFeatures = [];
+    this.clusterExpansionZoom = 14;
     maps.push(this);
   }
   on(event, ...args) {
     const handler = args[args.length - 1];
-    (this.handlers[event] ||= []).push(handler);
+    const layer = args.length > 1 ? args[0] : null;
+    (this.handlers[event] ||= []).push({ handler, layer, once: false });
     return this;
   }
-  once(event, handler) {
-    return this.on(event, handler);
+  once(event, ...args) {
+    this.on(event, ...args);
+    this.handlers[event][this.handlers[event].length - 1].once = true;
+    return this;
   }
-  fire(event) {
-    for (const handler of this.handlers[event] || []) handler();
+  off(event, ...args) {
+    const handler = args[args.length - 1];
+    this.handlers[event] = (this.handlers[event] || []).filter((entry) => entry.handler !== handler);
+    return this;
+  }
+  fire(event, payload) {
+    if (event === "idle" || event === "load" || event === "style.load") this.styleLoaded = true;
+    const entries = this.handlers[event] || [];
+    this.handlers[event] = entries.filter((entry) => !entry.once);
+    for (const entry of entries) entry.handler(payload);
   }
   addControl() {}
   remove() { this.removed = true; }
   resize() {}
   getZoom() { return this.zoom; }
+  getCenter() { return this.center; }
+  easeTo(options) {
+    this.easeToCalls.push(options);
+    if (options.zoom !== undefined) this.zoom = options.zoom;
+    if (options.center !== undefined) this.center = options.center;
+  }
   project([lng, lat]) { return { x: lng * 1000, y: lat * 1000 }; }
   getBounds() {
     return { getWest: () => -180, getEast: () => 180, getSouth: () => -90, getNorth: () => 90 };
   }
+  getStyle() {
+    const style = { version: 8, sources: { ...this.sources }, layers: [...this.layers] };
+    if (this.glyphs !== false) style.glyphs = "https://example.org/fonts/{fontstack}/{range}.pbf";
+    return style;
+  }
   getSource(id) { return this.sources[id]; }
-  addSource(id, source) { this.sources[id] = { ...source, setData: (data) => { this.sources[id].data = data; } }; }
+  addSource(id, source) {
+    this.styleLoaded = false;
+    this.sources[id] = {
+      ...source,
+      setDataCalls: 0,
+      setData: (data) => {
+        this.sources[id].data = data;
+        this.sources[id].setDataCalls += 1;
+        this.styleLoaded = false;
+      },
+      getClusterExpansionZoom: () => Promise.resolve(this.clusterExpansionZoom),
+    };
+  }
+  getLayer(id) { return this.layers.find((layer) => layer.id === id); }
   addLayer(layer) { this.layers.push(layer); }
-  isStyleLoaded() { return true; }
-  getCanvas() { return { style: {} }; }
-  setStyle(url, options) { this.setStyleCalls.push({ url, options }); }
+  setPaintProperty(id, name, value) { (this.paint[id] ||= {})[name] = value; }
+  // Wie MapLibre: (geometry?, {layers}); gefiltert nach feature.layer.id.
+  queryRenderedFeatures(...args) {
+    const options = args.find((arg) => arg && !Array.isArray(arg) && typeof arg === "object" && "layers" in arg);
+    this.lastQuery = args;
+    if (!options?.layers) return this.renderedFeatures;
+    return this.renderedFeatures.filter((feature) => options.layers.includes(feature.layer?.id));
+  }
+  isStyleLoaded() { return this.autoStyleLoaded ?? this.styleLoaded; }
+  getCanvas() { return (this.canvas ||= { style: {} }); }
+  setStyle(url, options) {
+    this.setStyleCalls.push({ url, options });
+    this.styleLoaded = false;
+  }
 }
 
 class FakeMarker {
@@ -134,8 +188,6 @@ describe("Escaping von API-Werten", () => {
     card._applyScale(card._currentData);
     card._renderLegend();
     expect(card._legendElement.innerHTML).not.toContain("onmouseover");
-    const cluster = card._clusterElement({ normal: 2, warn_high: 1 }, 3);
-    expect(cluster.innerHTML).not.toContain("onmouseover");
   });
 
   it("nimmt Schwellwerte nur als Zahlen", () => {
@@ -166,6 +218,7 @@ describe("Status je Messpunkt", () => {
   it("zeigt den Forecast in Marker und Popup aus denselben Feldern", () => {
     const card = newCard();
     const map = new FakeMap({ zoom: 14 });
+    map.fire("idle");
     card._map = map;
     card._maplibregl = fakeMapLibre;
     card._mapLoaded = true;
@@ -176,23 +229,221 @@ describe("Status je Messpunkt", () => {
   });
 });
 
-// ---- Cluster -------------------------------------------------------------------
+// ---- Cluster (MapLibre-Clustering) ---------------------------------------------
+
+const POINT = { latitude: 52, longitude: 13, l1_v: 230 };
+
+// Card mit FakeMap, deren Stil schon geladen ist, aber ohne DOM-Aufbau.
+function cardWithMap({ styleLoaded = true, glyphs = true } = {}) {
+  const card = newCard();
+  const map = new FakeMap({ zoom: 8 });
+  map.glyphs = glyphs;
+  if (styleLoaded) map.fire("style.load");
+  card._map = map;
+  card._maplibregl = fakeMapLibre;
+  card._mapLoaded = true;
+  return { card, map };
+}
 
 describe("Cluster", () => {
-  const features = [
-    { geometry: { coordinates: [13.0, 52.0] }, properties: { status: "normal" } },
-    { geometry: { coordinates: [13.001, 52.001] }, properties: { status: "normal" } },
-  ];
+  it("legt eine Cluster-Quelle mit Zählern je Status und dem schlechtesten Rang an", () => {
+    const { card, map } = cardWithMap();
+    card._renderPoints({ points: [POINT] });
+    const source = map.sources["ortsnetz-points"];
+    expect(source).toMatchObject({ type: "geojson", cluster: true, clusterRadius: 45, clusterMaxZoom: 11 });
+    expect(source.clusterProperties.crit_low).toEqual(["+", ["case", ["==", ["get", "status"], "crit_low"], 1, 0]]);
+    expect(Object.keys(source.clusterProperties).sort()).toEqual(
+      ["crit_high", "crit_low", "normal", "warn_high", "warn_low", "worst"],
+    );
+    expect(source.clusterProperties.worst).toEqual(["max", ["get", "rank"]]);
+  });
 
-  it("fasst bis unter Zoom 12 zusammen und zeigt ab Zoom 12 Einzelpunkte", () => {
+  it("vergibt Ränge: schlechtester Wert gewinnt, bei gleicher Schwere Unterspannung", () => {
+    const { card, map } = cardWithMap();
+    card._renderPoints({
+      points: [
+        { ...POINT, public_id: "a", l1_v: 200 },
+        { ...POINT, public_id: "b", l1_v: 260 },
+        { ...POINT, public_id: "c", l1_v: 212 },
+        { ...POINT, public_id: "d", l1_v: 247 },
+        { ...POINT, public_id: "e", l1_v: 230 },
+      ],
+    });
+    const ranks = Object.fromEntries(
+      map.sources["ortsnetz-points"].data.features.map((f) => [f.properties.status, f.properties.rank]),
+    );
+    expect(ranks).toEqual({ crit_low: 4, crit_high: 3, warn_low: 2, warn_high: 1, normal: 0 });
+  });
+
+  it("zeichnet Cluster-Kreis, Zähler und Einzelpunkte in dieser Reihenfolge", () => {
+    const { card, map } = cardWithMap();
+    card._renderPoints({ points: [POINT] });
+    expect(map.layers.map((layer) => layer.id)).toEqual(["ortsnetz-clusters", "ortsnetz-cluster-count", "ortsnetz-points"]);
+    const [circle, count, points] = map.layers;
+    expect(circle.filter).toEqual(["has", "point_count"]);
+    expect(count.layout["text-font"]).toEqual(["Noto Sans Regular"]);
+    expect(count.layout["text-field"]).toEqual(["get", "point_count_abbreviated"]);
+    // Zähler auf eigener, gleich konfigurierter Quelle: Schriftfehler treffen nur ihn.
+    expect(count.source).toBe("ortsnetz-cluster-labels");
+    expect(map.sources["ortsnetz-cluster-labels"]).toMatchObject({ cluster: true, clusterRadius: 45, clusterMaxZoom: 11 });
+    expect(map.sources["ortsnetz-cluster-labels"].data).toBe(map.sources["ortsnetz-points"].data);
+    expect(circle.source).toBe("ortsnetz-points");
+    expect(points.source).toBe("ortsnetz-points");
+    expect(points.filter).toEqual(["!", ["has", "point_count"]]);
+  });
+
+  it("lässt den Zähler weg, wenn der Stil keine Glyphen hat", () => {
+    const { card, map } = cardWithMap({ glyphs: false });
+    card._renderPoints({ points: [POINT] });
+    expect(map.layers.map((layer) => layer.id)).toEqual(["ortsnetz-clusters", "ortsnetz-points"]);
+    expect(map.sources["ortsnetz-cluster-labels"]).toBeUndefined();
+  });
+
+  it("färbt Cluster nach dem schlechtesten Status mit geprüften API-Farben", () => {
+    const { card, map } = cardWithMap();
+    card._applyScale({ scale: { colors: ["#111111", 'red"><img>', "#333333", "#444444", "#555555"] } });
+    card._renderPoints({ points: [POINT] });
+    const color = map.layers[0].paint["circle-color"];
+    expect(color).toEqual(["match", ["get", "worst"], 4, "#111111", 3, "#555555", 2, "#38bdf8", 1, "#444444", "#333333"]);
+    // Neue Farben aus der API werden in den bestehenden Layer übernommen.
+    card._applyScale({ scale: { colors: ["#aaaaaa", "#bbbbbb", "#cccccc", "#dddddd", "#eeeeee"] } });
+    card._renderPoints({ points: [POINT] });
+    expect(map.paint["ortsnetz-clusters"]["circle-color"][3]).toBe("#aaaaaa");
+  });
+
+  it("zählt nur aktivierte Status (Legendenfilter wirkt vor setData)", () => {
+    const { card, map } = cardWithMap();
+    card._enabled.delete("normal");
+    card._renderPoints({ points: [POINT, { ...POINT, public_id: "x", l1_v: 200 }] });
+    expect(map.sources["ortsnetz-points"].data.features.map((f) => f.properties.status)).toEqual(["crit_low"]);
+  });
+});
+
+describe("Rendern", () => {
+  it("zeichnet auch, wenn isStyleLoaded() false liefert (Kacheln laden)", () => {
+    const { card, map } = cardWithMap();
+    map.autoStyleLoaded = false;
+    card._renderPoints({ points: [POINT] });
+    expect(map.sources["ortsnetz-points"].data.features).toHaveLength(1);
+  });
+
+  it("merkt sich Daten vor dem Laden des Stils und legt die Quelle bei style.load an", () => {
+    const { card, map } = cardWithMap({ styleLoaded: false });
+    map.addSource = vi.fn(() => { throw new Error("Style is not done loading"); });
+    card._renderPoints({ points: [POINT] });
+    expect(card._allFeatures).toHaveLength(1);
+    delete map.addSource;
+    card._installMapEvents();
+    map.fire("style.load");
+    expect(map.sources["ortsnetz-points"].data.features).toHaveLength(1);
+  });
+
+  it("ruft setData nur bei geänderten Daten auf", () => {
+    const { card, map } = cardWithMap();
+    card._renderPoints({ points: [POINT] });
+    const source = map.sources["ortsnetz-points"];
+    const calls = source.setDataCalls;
+    card._renderPoints({ points: [{ ...POINT }] });
+    expect(source.setDataCalls).toBe(calls);
+    card._renderPoints({ points: [{ ...POINT, l1_v: 250 }] });
+    expect(source.setDataCalls).toBe(calls + 1);
+    expect(map.sources["ortsnetz-cluster-labels"].data).toBe(source.data);
+    card._renderPoints({ points: [{ ...POINT, l1_v: 250, stale: true }] });
+    expect(source.setDataCalls).toBe(calls + 2);
+  });
+
+  it("überspringt ungültige Koordinaten", () => {
+    const { card, map } = cardWithMap();
+    card._renderPoints({
+      points: [
+        { ...POINT, public_id: "ok", latitude: "52.1", longitude: "13.2" },
+        { ...POINT, public_id: "leer", latitude: "", longitude: 13 },
+        { ...POINT, public_id: "null", latitude: null, longitude: null },
+        { ...POINT, public_id: "text", latitude: "abc", longitude: 13 },
+        { ...POINT, public_id: "lat", latitude: 91, longitude: 13 },
+        { ...POINT, public_id: "lng", latitude: 52, longitude: -181 },
+        { ...POINT, public_id: "nullinsel", latitude: 0, longitude: 0 },
+        { ...POINT, public_id: "inf", latitude: Infinity, longitude: 13 },
+      ],
+    });
+    const features = map.sources["ortsnetz-points"].data.features;
+    expect(features.map((f) => f.properties.public_id)).toEqual(["ok"]);
+    expect(features[0].geometry.coordinates).toEqual([13.2, 52.1]);
+  });
+
+  it("fällt bei ungültigem Kartenmittelpunkt der Konfiguration auf den HA-Standort zurück", () => {
     const card = newCard();
-    card._allFeatures = features;
-    card._map = new FakeMap({ zoom: 11.9 });
-    expect(card._computeClusters().clusters).toHaveLength(1);
-    card._map.zoom = 12;
-    const result = card._computeClusters();
-    expect(result.clusters).toHaveLength(0);
-    expect(result.singles).toHaveLength(2);
+    card._hass = makeHass();
+    card.setConfig({ latitude: "abc", longitude: 13 });
+    expect(card._initialCenter()).toEqual([13.4, 52.5]);
+    card.setConfig({ latitude: 48.1, longitude: 11.5 });
+    expect(card._initialCenter()).toEqual([11.5, 48.1]);
+    card.setConfig({ latitude: 0, longitude: 0 });
+    expect(card._initialCenter()).toEqual([13.4, 52.5]);
+  });
+});
+
+describe("Interaktion", () => {
+  const box = { x: 100, y: 100 };
+
+  it("zoomt beim Klick auf einen Cluster auf dessen Auflösungs-Zoom", async () => {
+    const { card, map } = cardWithMap();
+    card._renderPoints({ points: [POINT] });
+    card._installPointInteractions(fakeMapLibre);
+    map.clusterExpansionZoom = 9;
+    map.renderedFeatures = [
+      { layer: { id: "ortsnetz-clusters" }, geometry: { coordinates: [13, 52] }, properties: { cluster_id: 7, point_count: 3 } },
+    ];
+    map.fire("click", { point: box, lngLat: { lng: 13, lat: 52 } });
+    await flush();
+    expect(map.easeToCalls).toEqual([{ center: [13, 52], zoom: 9 }]);
+    // Treffbereich: Box von 10 px um den Tippunkt.
+    expect(map.lastQuery[0]).toEqual([[90, 90], [110, 110]]);
+  });
+
+  it("öffnet beim Klick in der Nähe eines Einzelpunkts dessen Popup", () => {
+    const { card, map } = cardWithMap();
+    card._renderPoints({ points: [POINT] });
+    const popups = [];
+    const maplibre = {
+      ...fakeMapLibre,
+      Popup: class {
+        constructor(options) { this.options = options; popups.push(this); }
+        setLngLat(at) { this.at = at; return this; }
+        setHTML(html) { this.html = html; return this; }
+        addTo() { return this; }
+        getElement() { return null; }
+        remove() {}
+      },
+    };
+    card._installPointInteractions(maplibre);
+    map.renderedFeatures = [
+      { layer: { id: "ortsnetz-points" }, geometry: { coordinates: [13, 52] }, properties: { public_id: "a", l1_v: 230 } },
+    ];
+    map.fire("click", { point: box, lngLat: { lng: 13, lat: 52 } });
+    expect(popups).toHaveLength(1);
+    expect(popups[0].at).toEqual([13, 52]);
+    expect(popups[0].html).toContain("Ortsnetz-Messpunkt");
+  });
+});
+
+// ---- Nachbildung von MapLibre selbst -------------------------------------------
+
+describe("FakeMap", () => {
+  it("bildet once, Argumente und isStyleLoaded nach", () => {
+    const map = new FakeMap({ zoom: 5 });
+    const seen = [];
+    map.once("idle", (payload) => seen.push(payload));
+    map.fire("idle", "a");
+    map.fire("idle", "b");
+    expect(seen).toEqual(["a"]);
+    expect(map.isStyleLoaded()).toBe(true);
+    map.addSource("s", { type: "geojson" });
+    map.getSource("s").setData({});
+    expect(map.isStyleLoaded()).toBe(false);
+    map.fire("idle");
+    map.setStyle("x");
+    expect(map.isStyleLoaded()).toBe(false);
   });
 });
 
@@ -251,25 +502,52 @@ describe("Initialisierung", () => {
 });
 
 describe("Theme-Wechsel", () => {
-  it("übernimmt die eigene Quelle und Ebene in den neuen Stil", async () => {
+  const own = [
+    { id: "ortsnetz-clusters", type: "circle", source: "ortsnetz-points" },
+    { id: "ortsnetz-cluster-count", type: "symbol", source: "ortsnetz-cluster-labels" },
+    { id: "ortsnetz-points", type: "circle", source: "ortsnetz-points" },
+  ];
+  const source = { type: "geojson", cluster: true, data: { type: "FeatureCollection", features: [] } };
+  const labels = { ...source };
+
+  async function transform() {
     window.maplibregl = fakeMapLibre;
     const card = newCard();
     card.hass = makeHass();
     document.body.appendChild(card);
     await flush();
-
     card.hass = makeHass({ themes: { darkMode: true } });
     const [{ url, options }] = maps[0].setStyleCalls;
     expect(url).toContain("dark");
+    return options.transformStyle;
+  }
 
-    const source = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
-    const layer = { id: "ortsnetz-points", type: "circle", source: "ortsnetz-points" };
-    const next = options.transformStyle(
-      { sources: { "ortsnetz-points": source }, layers: [layer] },
-      { sources: { base: {} }, layers: [{ id: "background" }] },
+  it("übernimmt Quelle und alle eigenen Layer in Reihenfolge in den neuen Stil", async () => {
+    const transformStyle = await transform();
+    const next = transformStyle(
+      { sources: { "ortsnetz-points": source, "ortsnetz-cluster-labels": labels }, layers: [{ id: "old-bg" }, ...own] },
+      { glyphs: "https://example.org/{fontstack}/{range}.pbf", sources: { base: {} }, layers: [{ id: "background" }] },
     );
     expect(next.sources["ortsnetz-points"]).toBe(source);
-    expect(next.layers.map((item) => item.id)).toEqual(["background", "ortsnetz-points"]);
+    expect(next.sources["ortsnetz-cluster-labels"]).toBe(labels);
+    expect(next.sources.base).toEqual({});
+    expect(next.layers.map((item) => item.id)).toEqual(["background", "ortsnetz-clusters", "ortsnetz-cluster-count", "ortsnetz-points"]);
+  });
+
+  it("lässt den Zähler weg, wenn der neue Stil keine Glyphen hat", async () => {
+    const transformStyle = await transform();
+    const next = transformStyle(
+      { sources: { "ortsnetz-points": source, "ortsnetz-cluster-labels": labels }, layers: own },
+      { sources: {}, layers: [{ id: "background" }] },
+    );
+    expect(Object.keys(next.sources)).toEqual(["ortsnetz-points"]);
+    expect(next.layers.map((item) => item.id)).toEqual(["background", "ortsnetz-clusters", "ortsnetz-points"]);
+  });
+
+  it("wartet nicht auf idle, sondern legt fehlende Layer bei style.load wieder an", async () => {
+    await transform();
+    const map = maps[0];
+    expect(map.handlers.idle || []).toHaveLength(0);
   });
 });
 
@@ -306,6 +584,47 @@ describe("Abruf der Messwerte", () => {
       await card._loadMeasurements();
       expect(card._statusElement.textContent).toBe(text);
     }
+  });
+});
+
+// ---- Diagnose ----------------------------------------------------------------------
+
+describe("Diagnosezeile", () => {
+  it("ist ohne debug ausgeblendet", async () => {
+    window.maplibregl = fakeMapLibre;
+    const card = newCard();
+    card.setConfig({});
+    card.hass = makeHass();
+    document.body.appendChild(card);
+    await flush();
+    expect(card.querySelector(".ortsnetz-debug").hidden).toBe(true);
+  });
+
+  it("zeigt mit debug: true Zoom, gesetzte Punkte, Cluster und sichtbare Einzelpunkte", async () => {
+    window.maplibregl = fakeMapLibre;
+    const card = newCard();
+    card.setConfig({ debug: true });
+    card.hass = makeHass();
+    document.body.appendChild(card);
+    await flush();
+    const map = maps[0];
+    map.zoom = 8.43;
+    map.fire("style.load");
+    card._renderPoints({ points: [POINT] });
+    const points = { id: "ortsnetz-points" };
+    const clusters = { id: "ortsnetz-clusters" };
+    map.renderedFeatures = [
+      { layer: points, properties: { public_id: "a" } },
+      { layer: points, properties: { public_id: "b" } },
+      { layer: points, properties: { public_id: "b" } }, // Kachelgrenze: doppelt geliefert
+      { layer: clusters, properties: { cluster_id: 1, point_count: 5 } },
+      { layer: clusters, properties: { cluster_id: 2, point_count: 7 } },
+    ];
+    card._allFeatures = new Array(312);
+    map.fire("idle");
+    const element = card.querySelector(".ortsnetz-debug");
+    expect(element.hidden).toBe(false);
+    expect(element.textContent).toBe("Zoom 8,4 · 312 Punkte gesetzt · 2 Cluster (12 Punkte) · 2 Einzel sichtbar");
   });
 });
 
