@@ -50,7 +50,8 @@ async function pieState(page) {
 
 for (const [label, size] of Object.entries(SIZES)) {
   test(`Torten sitzen auf ihren Clustern und stimmen mit den Zählern (${label})`, async ({ page }) => {
-    await openCard(page, { size, config: { latitude: 51.0, longitude: 10.0, zoom: 5 } });
+    // Berlin: dichte Punkte, damit es auch bei Zoom 9,5 und 11 Cluster gibt.
+    await openCard(page, { size, config: { latitude: 52.52, longitude: 13.4, zoom: 5 } });
     for (const zoom of [5, 6.5, 8, 9.5, 11, 12, 7]) {
       await page.evaluate((zoom) => window.__card._map.jumpTo({ zoom }), zoom);
       await waitIdle(page);
@@ -93,7 +94,7 @@ test("Torten folgen der Karte während der Bewegung und werden nicht neu aufgeba
       }
       resolve({ max, frames, replaced, kept: before.size });
     });
-    map.panBy([160, 90], { duration: 600 });
+    map.panBy([160, 90], { duration: 1500 });
   }));
   expect(worst.frames).toBeGreaterThan(5);
   expect(worst.max).toBeLessThanOrEqual(1.5);
@@ -120,7 +121,7 @@ test("Klick und Tastatur auf eine Torte zoomen hinein", async ({ page }) => {
   await page.evaluate(() => window.__card._map.jumpTo({ center: [10.0, 51.0], zoom: 6 }));
   await waitIdle(page);
   const zoom = await page.evaluate(() => window.__card._map.getZoom());
-  const button = page.locator('.ortsnetz-pie [role="button"]').first();
+  const button = page.locator('.ortsnetz-pie[role="button"]').first();
   await button.focus();
   await page.keyboard.press("Enter");
   await page.waitForFunction((zoom) => window.__card._map.getZoom() > zoom + 0.5, zoom);
