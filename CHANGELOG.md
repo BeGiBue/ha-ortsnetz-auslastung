@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.0.2 (in Arbeit)
+
+Card:
+- Fix: Das Popup eines Messpunkts lag teilweise außerhalb der Karte, vor allem nachdem der 24-Stunden-Verlauf nachgeladen war, und war ohne Verschieben der Karte nicht ganz zu sehen. Jetzt:
+  - Breite höchstens Kartenbreite − 24 px (maximal 320 px), die Diagramme passen sich an.
+  - Höhe höchstens Kartenhöhe; längerer Inhalt scrollt im Popup, das Schließen-Kreuz bleibt sichtbar.
+  - Nach dem Öffnen und nach dem Nachladen des Verlaufs verschiebt die Card die Karte, bis das Popup mit 12 px Rand sichtbar ist, nur wenn nötig und nie so weit, dass der angetippte Punkt aus dem Bild läuft. Hat man die Karte nach dem Öffnen selbst bewegt, wird nicht mehr verschoben.
+  - Feste Ankerseite (in der oberen Kartenhälfte unter dem Punkt, sonst darüber), damit das Popup beim Wachsen nicht springt.
+  - Das Popup liegt über Legende, Statuszeile und Zoom-Schaltflächen statt darunter.
+
 ## 2.0.1
 
 Behebt das Verschwinden von Punkten beim Herauszoomen (Companion-App, Safari auf dem iPad, aber auch Desktop-Browser).
