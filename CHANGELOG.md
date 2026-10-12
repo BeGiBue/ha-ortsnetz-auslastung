@@ -8,6 +8,13 @@ Card:
 - Drehen und Kippen der Karte sind gesperrt (Zwei-Finger-Drehung, Rechtsklick-Ziehen, Tastatur). Ohne Kompass ließ sich eine gedrehte Karte nicht zurücksetzen.
 - Schlägt der Abruf der Messwerte fehl, versucht die Card es nach 15, 30 und 60 Sekunden erneut (nur bei sichtbarem Tab), danach wieder im normalen Intervall. Nach einer Wiederverbindung zu Home Assistant wird sofort abgerufen.
 - „Lade Messwerte …“ erscheint nur noch beim ersten Laden. Scheitert später eine Aktualisierung, bleibt der letzte Stand sichtbar („Aktualisierung fehlgeschlagen, zeige Stand 09:40“).
+- Änderungen der Konfiguration (z. B. im Dashboard-Editor) bauen die Karte nicht mehr neu auf: Zoom und Mittelpunkt verschieben nur die Kamera, Legende/Status/Diagnose werden ein- oder ausgeblendet, eine andere Phase zeichnet neu, das Intervall startet den Timer neu, die kooperativen Gesten werden an der laufenden Karte umgeschaltet. Unveränderte Konfigurationen werden ignoriert.
+- Quellenangabe kompakt (nur das (i), klappt auf) und auch im Ersatzstil ohne Kartenhintergrund sichtbar.
+
+Karteneditor:
+- Leere oder ungültige Eingaben werden nicht mehr zu 0: Zoom und Intervall fallen auf den Standard zurück, Koordinaten behalten ihren bisherigen Wert.
+- Zahlen werden auf die erlaubten Bereiche geklemmt (Zoom 1–19, Intervall 60–3600 s, Breitengrad ±90, Längengrad ±180).
+- Standardwerte werden nicht mehr in die YAML geschrieben; nur Abweichungen stehen in der Konfiguration, unbekannte Schlüssel bleiben erhalten.
 
 ## 2.0.2-beta.1 (Vorabversion)
 
