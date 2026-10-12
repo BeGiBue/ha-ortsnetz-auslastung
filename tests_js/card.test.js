@@ -532,6 +532,86 @@ describe("Initialisierung", () => {
   });
 });
 
+describe("Kartenhintergrund nicht erreichbar", () => {
+  async function mountedCard(hass = makeHass()) {
+    window.maplibregl = fakeMapLibre;
+    const card = newCard();
+    card.hass = hass;
+    document.body.appendChild(card);
+    await vi.advanceTimersByTimeAsync(0);
+    return { card, map: maps[0], hass };
+  }
+  const status = (card) => card.querySelector(".ortsnetz-status").textContent;
+
+  beforeEach(() => vi.useFakeTimers());
+
+  it("startet den Datenabruf direkt nach dem Kartenaufbau, ohne auf load zu warten", async () => {
+    const { hass } = await mountedCard();
+    expect(hass.connection.sendMessagePromise).toHaveBeenCalledWith({ type: "ortsnetz_map/get_points" });
+  });
+
+  it("ruft bei sichtbarem Tab nach Ablauf des Intervalls auch ohne load erneut ab", async () => {
+    const { card, hass } = await mountedCard();
+    hass.connection.sendMessagePromise.mockClear();
+    card._lastLoad = 0;
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(hass.connection.sendMessagePromise).toHaveBeenCalledTimes(1);
+  });
+
+  it("meldet Kachelfehler einmal entprellt in der Statuszeile, ohne console.error", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { card, map } = await mountedCard();
+    map.fire("style.load");
+    card._setStatus("700 Messpunkte · 09:40");
+    for (let i = 0; i < 50; i++) map.fire("error", { error: new Error("404"), sourceId: "openmaptiles", tile: {} });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(status(card)).toContain("700 Messpunkte · 09:40");
+    expect(status(card)).toContain("Kartenhintergrund nicht erreichbar (tiles.openfreemap.org)");
+    expect(consoleError).not.toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+
+  it("schaltet auf einen Ersatzstil, wenn der Stil nicht lädt", async () => {
+    const { card, map } = await mountedCard();
+    map.fire("error", { error: new Error("Failed to fetch") });
+    const { url } = map.setStyleCalls.at(-1);
+    expect(url.layers).toEqual([{ id: "background", type: "background", paint: { "background-color": "#e5e7eb" } }]);
+    expect(url.glyphs).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(status(card)).toContain("Kartenhintergrund nicht erreichbar");
+  });
+
+  it("nimmt im dunklen Theme den dunklen Ersatzstil", async () => {
+    const { map } = await mountedCard(makeHass({ themes: { darkMode: true } }));
+    map.fire("error", { error: new Error("Failed to fetch") });
+    expect(map.setStyleCalls.at(-1).url.layers[0].paint["background-color"]).toBe("#1f2937");
+  });
+
+  it("schaltet auf den Ersatzstil, wenn der Stil nach 10 s noch nicht geladen ist", async () => {
+    const { map } = await mountedCard();
+    await vi.advanceTimersByTimeAsync(9000);
+    expect(map.setStyleCalls).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(map.setStyleCalls.at(-1).url.layers[0].id).toBe("background");
+  });
+
+  it("bleibt beim echten Stil, wenn er rechtzeitig lädt", async () => {
+    const { map } = await mountedCard();
+    map.fire("style.load");
+    map.fire("error", { error: new Error("404"), sourceId: "openmaptiles" });
+    await vi.advanceTimersByTimeAsync(15000);
+    expect(map.setStyleCalls).toHaveLength(0);
+  });
+
+  it("versucht nach dem Ersatzstil beim nächsten Theme-Wechsel wieder den echten Stil", async () => {
+    const { card, map } = await mountedCard();
+    map.fire("error", { error: new Error("Failed to fetch") });
+    map.fire("style.load"); // Ersatzstil geladen
+    card.hass = makeHass({ themes: { darkMode: true } });
+    expect(map.setStyleCalls.at(-1).url).toContain("tiles.openfreemap.org/styles/dark");
+  });
+});
+
 describe("Theme-Wechsel", () => {
   const own = [
     { id: "ortsnetz-clusters", type: "circle", source: "ortsnetz-points" },
