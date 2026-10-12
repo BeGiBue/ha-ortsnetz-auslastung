@@ -31,6 +31,9 @@ const OWN_LAYER_IDS = [CLUSTER_LAYER_ID, COUNT_LAYER_ID, LAYER_ID];
 // MapLibre fasst bis Zoom 11 zusammen, ab Zoom 12 erscheinen nur Einzelpunkte.
 const CLUSTER_MAX_ZOOM = 11;
 const CLUSTER_RADIUS = 45;
+// Cluster als Tortendiagramme (HTML-Marker über dem Cluster-Kreis). false schaltet auf
+// die Rückfallebene: einfarbiger Kreis mit Zahl aus dem Symbol-Layer.
+const CLUSTER_PIES = true;
 // Schrift aus dem Glyphensatz beider OpenFreeMap-Stile (Liberty und Dark).
 const COUNT_FONT = ["Noto Sans Regular"];
 // Treffbereich um den Tipp- bzw. Klickpunkt in Pixeln (Touch).
@@ -317,6 +320,8 @@ class OrtsnetzMapCard extends HTMLElement {
     this._allFeatures = [];
     this._featuresHash = null;
     this._sourceHash = null;
+    // Torten-Marker je cluster_id.
+    this._pieMarkers = new Map();
     this._paintedColors = null;
     // Erhöht sich bei jedem Auf- und Abbau; veraltete async-Schritte brechen damit ab.
     this._generation = 0;
@@ -401,6 +406,7 @@ class OrtsnetzMapCard extends HTMLElement {
     }
     this._sourceHash = null;
     this._paintedColors = null;
+    this._clearPies();
     if (this._map) {
       this._map.remove();
       this._map = null;
@@ -454,6 +460,12 @@ class OrtsnetzMapCard extends HTMLElement {
           .legend-size { margin-top:8px; }
           /* Popup über Legende, Statuszeile (z-index 5) und Zoom-Schaltflächen. */
           .maplibregl-popup { z-index:6; }
+          /* Torte im Marker. Das Marker-Element selbst positioniert MapLibre (.maplibregl-marker,
+             position:absolute) und darf keine eigene position-Regel bekommen. */
+          .ortsnetz-pie { position:relative; box-sizing:border-box; border:2px solid #fff; border-radius:50%; overflow:hidden; cursor:pointer; box-shadow:0 1px 4px rgba(0,0,0,.35); }
+          .ortsnetz-pie svg { display:block; }
+          .ortsnetz-pie span { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:#fff; font-weight:700; font-size:13px; text-shadow:0 0 3px rgba(0,0,0,.6); pointer-events:none; }
+          .ortsnetz-pie:focus-visible { outline:3px solid var(--primary-color, #03a9f4); outline-offset:2px; }
           /* Hinweis der kooperativen Gesten unter Legende und Statuszeile (z-index 5). */
           .maplibregl-cooperative-gesture-screen { z-index:4; }
           .maplibregl-popup-content { background:var(--card-background-color); color:var(--primary-text-color); border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,.25); }
@@ -627,6 +639,9 @@ class OrtsnetzMapCard extends HTMLElement {
       if (event?.tile && !this._fallbackActive && !this._isOwnSource(event.sourceId)) this._setMapProblem(null);
     });
     if (this._config.debug) this._watchDebug();
+    // Einmal je Frame: Torten für die gerade gezeichneten Cluster anlegen, ändern, entfernen.
+    // Ihre Position führt MapLibre bei jeder Bewegung selbst nach.
+    this._map.on("render", () => this._updatePies());
   }
 
   _isOwnSource(id) {
@@ -1233,7 +1248,7 @@ class OrtsnetzMapCard extends HTMLElement {
     try {
       const style = map.getStyle();
       if (!style) return false;
-      const withCount = Boolean(style.glyphs);
+      const withCount = Boolean(style.glyphs) && !OrtsnetzMapCard.clusterPies;
       const sourceIds = withCount ? [SOURCE_ID, LABEL_SOURCE_ID] : [SOURCE_ID];
       // Fehlt eine Quelle, bekommen alle beim nächsten _syncSource die aktuellen Daten.
       if (sourceIds.some((id) => !map.getSource(id))) this._sourceHash = null;
@@ -1276,6 +1291,96 @@ class OrtsnetzMapCard extends HTMLElement {
       if (this._paintedColors !== null) map.setPaintProperty(CLUSTER_LAYER_ID, "circle-color", color);
       this._paintedColors = colorKey;
     }
+  }
+
+  // ---- Cluster als Tortendiagramme ----------------------------------------
+
+  // Torten für die gerenderten Cluster. Kennung ist die cluster_id; Zahlen und Farben
+  // dienen nur der Änderungsprüfung, damit bei Bewegung nichts neu aufgebaut wird.
+  _updatePies() {
+    const map = this._map;
+    if (!map || !OrtsnetzMapCard.clusterPies || !this._maplibregl) return;
+    // Während eines Stilwechsels fehlt der Layer: Marker bis dahin stehen lassen.
+    if (!map.getLayer(CLUSTER_LAYER_ID)) return;
+    const seen = new Set();
+    for (const feature of map.queryRenderedFeatures({ layers: [CLUSTER_LAYER_ID] })) {
+      const p = feature.properties || {};
+      const id = String(p.cluster_id);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const signature = JSON.stringify([STATUSES.map((s) => Number(p[s.key]) || 0), STATUSES.map((s) => this._color(s.key))]);
+      let marker = this._pieMarkers.get(id);
+      if (!marker) {
+        const element = document.createElement("div");
+        marker = new this._maplibregl.Marker({ element }).setLngLat(feature.geometry.coordinates).addTo(map);
+        this._pieMarkers.set(id, marker);
+      }
+      marker.ortsnetzFeature = feature;
+      if (marker.ortsnetzSignature !== signature) {
+        const pie = this._clusterElement(p);
+        const zoom = (event) => {
+          event.stopPropagation();
+          event.preventDefault();
+          this._zoomIntoCluster(marker.ortsnetzFeature);
+        };
+        pie.addEventListener("click", zoom);
+        pie.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") zoom(event);
+        });
+        marker.getElement().replaceChildren(pie);
+        marker.ortsnetzSignature = signature;
+      }
+    }
+    for (const [id, marker] of this._pieMarkers) {
+      if (seen.has(id)) continue;
+      marker.remove();
+      this._pieMarkers.delete(id);
+    }
+  }
+
+  _clearPies() {
+    for (const marker of this._pieMarkers.values()) marker.remove();
+    this._pieMarkers.clear();
+  }
+
+  // Torte eines Clusters aus seinen Zählern je Status (Reihenfolge wie die Legende).
+  _clusterElement(p) {
+    const parts = STATUSES
+      .map((s) => ({ status: s, n: Number(p[s.key]) || 0 }))
+      .filter((part) => part.n > 0);
+    const total = parts.reduce((sum, part) => sum + part.n, 0) || Number(p.point_count) || 0;
+    // Gleiche Größe wie der Cluster-Kreis darunter (28–72 px).
+    const size = Math.round(Math.min(72, 28 + 4 * Math.sqrt(total)));
+    const r = (size - 4) / 2; // innerhalb des weißen Rands
+    let shapes = "";
+    if (parts.length <= 1) {
+      const part = parts[0];
+      const key = part?.status.key ?? "normal";
+      shapes = `<circle cx="${r}" cy="${r}" r="${r}" fill="${escapeHtml(this._color(key))}" data-status="${key}" data-count="${part?.n ?? total}"/>`;
+    } else {
+      let angle = -Math.PI / 2;
+      for (const part of parts) {
+        const next = angle + (part.n / total) * 2 * Math.PI;
+        const x1 = r + r * Math.cos(angle);
+        const y1 = r + r * Math.sin(angle);
+        const x2 = r + r * Math.cos(next);
+        const y2 = r + r * Math.sin(next);
+        const large = next - angle > Math.PI ? 1 : 0;
+        shapes += `<path d="M${r} ${r} L${x1.toFixed(2)} ${y1.toFixed(2)} A${r} ${r} 0 ${large} 1 ${x2.toFixed(2)} ${y2.toFixed(2)} Z" fill="${escapeHtml(this._color(part.status.key))}" data-status="${part.status.key}" data-count="${part.n}"/>`;
+        angle = next;
+      }
+    }
+    const label = `Cluster mit ${total} Messpunkten: ${parts.map((part) => `${part.n} ${part.status.label}`).join(", ")}. Antippen zum Hineinzoomen.`;
+    const element = document.createElement("div");
+    element.className = "ortsnetz-pie";
+    if (p.cluster_id !== undefined) element.dataset.clusterId = String(p.cluster_id);
+    element.setAttribute("role", "button");
+    element.setAttribute("tabindex", "0");
+    element.setAttribute("aria-label", label);
+    element.style.width = `${size}px`;
+    element.style.height = `${size}px`;
+    element.innerHTML = `<svg width="${size - 4}" height="${size - 4}" viewBox="0 0 ${size - 4} ${size - 4}" aria-hidden="true">${shapes}</svg><span aria-hidden="true">${total}</span>`;
+    return element;
   }
 
   // Clusterfarbe nach dem höchsten Rang (siehe STATUSES.rank).
@@ -1422,6 +1527,9 @@ class OrtsnetzMapCard extends HTMLElement {
       min_rows: 3,
     };
   }
+
+  // Rückfallebene: false zeichnet Cluster als Kreis mit Zahl statt als Torte.
+  static clusterPies = CLUSTER_PIES;
 
   // Ohne DOM testbar (Vitest).
   static popupPanOffset(...args) { return popupPanOffset(...args); }
