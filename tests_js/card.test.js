@@ -283,6 +283,12 @@ describe("Cluster", () => {
     expect(circle.filter).toEqual(["has", "point_count"]);
     expect(count.layout["text-font"]).toEqual(["Noto Sans Regular"]);
     expect(count.layout["text-field"]).toEqual(["get", "point_count_abbreviated"]);
+    // Zähler auf eigener, gleich konfigurierter Quelle: Schriftfehler treffen nur ihn.
+    expect(count.source).toBe("ortsnetz-cluster-labels");
+    expect(map.sources["ortsnetz-cluster-labels"]).toMatchObject({ cluster: true, clusterRadius: 45, clusterMaxZoom: 11 });
+    expect(map.sources["ortsnetz-cluster-labels"].data).toBe(map.sources["ortsnetz-points"].data);
+    expect(circle.source).toBe("ortsnetz-points");
+    expect(points.source).toBe("ortsnetz-points");
     expect(points.filter).toEqual(["!", ["has", "point_count"]]);
   });
 
@@ -290,6 +296,7 @@ describe("Cluster", () => {
     const { card, map } = cardWithMap({ glyphs: false });
     card._renderPoints({ points: [POINT] });
     expect(map.layers.map((layer) => layer.id)).toEqual(["ortsnetz-clusters", "ortsnetz-points"]);
+    expect(map.sources["ortsnetz-cluster-labels"]).toBeUndefined();
   });
 
   it("färbt Cluster nach dem schlechtesten Status mit geprüften API-Farben", () => {
@@ -340,6 +347,7 @@ describe("Rendern", () => {
     expect(source.setDataCalls).toBe(calls);
     card._renderPoints({ points: [{ ...POINT, l1_v: 250 }] });
     expect(source.setDataCalls).toBe(calls + 1);
+    expect(map.sources["ortsnetz-cluster-labels"].data).toBe(source.data);
     card._renderPoints({ points: [{ ...POINT, l1_v: 250, stale: true }] });
     expect(source.setDataCalls).toBe(calls + 2);
   });
@@ -496,10 +504,11 @@ describe("Initialisierung", () => {
 describe("Theme-Wechsel", () => {
   const own = [
     { id: "ortsnetz-clusters", type: "circle", source: "ortsnetz-points" },
-    { id: "ortsnetz-cluster-count", type: "symbol", source: "ortsnetz-points" },
+    { id: "ortsnetz-cluster-count", type: "symbol", source: "ortsnetz-cluster-labels" },
     { id: "ortsnetz-points", type: "circle", source: "ortsnetz-points" },
   ];
   const source = { type: "geojson", cluster: true, data: { type: "FeatureCollection", features: [] } };
+  const labels = { ...source };
 
   async function transform() {
     window.maplibregl = fakeMapLibre;
@@ -516,10 +525,11 @@ describe("Theme-Wechsel", () => {
   it("übernimmt Quelle und alle eigenen Layer in Reihenfolge in den neuen Stil", async () => {
     const transformStyle = await transform();
     const next = transformStyle(
-      { sources: { "ortsnetz-points": source }, layers: [{ id: "old-bg" }, ...own] },
+      { sources: { "ortsnetz-points": source, "ortsnetz-cluster-labels": labels }, layers: [{ id: "old-bg" }, ...own] },
       { glyphs: "https://example.org/{fontstack}/{range}.pbf", sources: { base: {} }, layers: [{ id: "background" }] },
     );
     expect(next.sources["ortsnetz-points"]).toBe(source);
+    expect(next.sources["ortsnetz-cluster-labels"]).toBe(labels);
     expect(next.sources.base).toEqual({});
     expect(next.layers.map((item) => item.id)).toEqual(["background", "ortsnetz-clusters", "ortsnetz-cluster-count", "ortsnetz-points"]);
   });
@@ -527,9 +537,10 @@ describe("Theme-Wechsel", () => {
   it("lässt den Zähler weg, wenn der neue Stil keine Glyphen hat", async () => {
     const transformStyle = await transform();
     const next = transformStyle(
-      { sources: { "ortsnetz-points": source }, layers: own },
+      { sources: { "ortsnetz-points": source, "ortsnetz-cluster-labels": labels }, layers: own },
       { sources: {}, layers: [{ id: "background" }] },
     );
+    expect(Object.keys(next.sources)).toEqual(["ortsnetz-points"]);
     expect(next.layers.map((item) => item.id)).toEqual(["background", "ortsnetz-clusters", "ortsnetz-points"]);
   });
 
