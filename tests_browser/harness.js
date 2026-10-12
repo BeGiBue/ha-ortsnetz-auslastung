@@ -114,7 +114,10 @@ const HARNESS_HTML = `<!doctype html>
     // Stylesheets aus document.head wirken dort nicht.
     const root = host.attachShadow({ mode: "open" });
     const style = document.createElement("style");
-    style.textContent = ":host{display:block} ortsnetz-map-card{display:block;height:100%}";
+    // Farbvariablen eines hellen Home-Assistant-Themes (sonst wären z. B. Popups durchsichtig).
+    style.textContent = ":host{display:block;--card-background-color:#fff;--primary-background-color:#fafafa;" +
+      "--primary-text-color:#212121;--secondary-text-color:#727272;--primary-color:#03a9f4;--divider-color:#e0e0e0}" +
+      " ortsnetz-map-card{display:block;height:100%}";
     root.appendChild(style);
     const card = document.createElement("ortsnetz-map-card");
     card.setConfig(config);

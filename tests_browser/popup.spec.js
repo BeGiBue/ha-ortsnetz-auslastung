@@ -60,15 +60,16 @@ async function geometry(page) {
       covered: (() => {
         const root = card.getRootNode();
         const content = element.querySelector(".maplibregl-popup-content").getBoundingClientRect();
-        const spots = {
-          "unten links": [content.left + 12, content.bottom - 12],
-          "unten rechts": [content.right - 12, content.bottom - 12],
-          "oben links": [content.left + 12, content.top + 12],
-          kreuz: [close.left + close.width / 2, close.top + close.height / 2],
-        };
+        // Raster im Abstand von 16 px über den ganzen Inhalt, dazu das Kreuz. Die Statuszeile
+        // hat pointer-events:none und wird hier nicht erkannt; sie liegt wie die Legende auf z-index 5.
+        const spots = { kreuz: [close.left + close.width / 2, close.top + close.height / 2] };
+        for (let y = content.top + 4; y < content.bottom - 2; y += 16) {
+          for (let x = content.left + 4; x < content.right - 2; x += 16) spots[`${Math.round(x - content.left)},${Math.round(y - content.top)}`] = [x, y];
+        }
         return Object.entries(spots)
           .filter(([, [x, y]]) => !root.elementFromPoint(x, y)?.closest(".maplibregl-popup"))
-          .map(([name, [x, y]]) => `${name}: ${root.elementFromPoint(x, y)?.className}`);
+          .map(([name, [x, y]]) => `${name}: ${root.elementFromPoint(x, y)?.className}`)
+          .slice(0, 5);
       })(),
     };
   });
