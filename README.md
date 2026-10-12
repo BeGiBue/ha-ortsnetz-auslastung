@@ -1,6 +1,6 @@
 # Ortsnetz Map
 
-**Version 2.0.2**
+**Version 2.1.0-beta.1**
 
 Home-Assistant-Integration mit Dashboard-Karte für die öffentlichen Messpunkte von [ortsnetz-auslastung.de](https://www.ortsnetz-auslastung.de/). Die Integration lädt die Daten serverseitig, speichert sie bedarfsgesteuert zwischen und liefert gleich die passende Karte mit. Backend und Card sind hier in **einem** HACS-Repository zusammengeführt.
 
@@ -10,7 +10,7 @@ Der Browser ruft die externe API nicht direkt auf, CORS ist kein Problem. Die Me
 
 **Karte**
 
-- Standorte in der Nähe werden bis Zoom 11 zu Clustern zusammengefasst (MapLibre-Clustering), ab Zoom 12 erscheinen alle Einzelpunkte. Ein Cluster zeigt die Anzahl seiner Standorte und hat die Farbe des schlechtesten enthaltenen Status. Ein Klick zoomt so weit hinein, dass er sich aufteilt. (Tortendiagramme mit den Statusanteilen folgen in 2.1.0.)
+- Standorte in der Nähe werden bis Zoom 11 zu Clustern zusammengefasst (MapLibre-Clustering), ab Zoom 12 erscheinen alle Einzelpunkte. Ein Cluster ist ein Tortendiagramm mit den Anteilen der Status und der Anzahl seiner Standorte; ein Klick (oder Enter, wenn der Cluster per Tab ausgewählt ist) zoomt so weit hinein, dass er sich aufteilt.
 - Punkte und Cluster lassen sich auch auf Touch-Geräten treffen: Tippen bis 10 px daneben genügt.
 - Kooperative Gesten (abschaltbar): Ein Finger scrollt die Seite, zwei Finger bewegen die Karte, am Computer zoomt Strg (Mac: ⌘) + Mausrad. Die Karte lässt sich nicht drehen oder kippen.
 - Schlägt ein Abruf fehl, versucht die Card es nach 15, 30 und 60 Sekunden erneut und zeigt bis dahin den letzten Stand.
