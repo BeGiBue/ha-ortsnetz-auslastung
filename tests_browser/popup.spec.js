@@ -52,13 +52,50 @@ async function geometry(page) {
       width: box.width,
       height: box.height,
       charts: Boolean(element.querySelector(".popup-charts svg")),
+      userMoved: Boolean(card._popupUserMoved),
+      moving: map.isMoving(),
+      pans: window.__pans || [],
+      anchor: [...element.classList].find((name) => name.startsWith("maplibregl-popup-anchor-")),
+      // Liegt etwas (Legende, Statuszeile) über dem Popup? Ecken des Inhalts und das Kreuz prüfen.
+      covered: (() => {
+        const root = card.getRootNode();
+        const content = element.querySelector(".maplibregl-popup-content").getBoundingClientRect();
+        const spots = {
+          "unten links": [content.left + 12, content.bottom - 12],
+          "unten rechts": [content.right - 12, content.bottom - 12],
+          "oben links": [content.left + 12, content.top + 12],
+          kreuz: [close.left + close.width / 2, close.top + close.height / 2],
+        };
+        return Object.entries(spots)
+          .filter(([, [x, y]]) => !root.elementFromPoint(x, y)?.closest(".maplibregl-popup"))
+          .map(([name, [x, y]]) => `${name}: ${root.elementFromPoint(x, y)?.className}`);
+      })(),
     };
   });
+}
+
+// Wartet, bis die Karte ruht und das Popup seine Lage 300 ms lang nicht mehr ändert
+// (die Card verschiebt die Karte erst im nächsten Frame und animiert 250 ms).
+async function settle(page) {
+  let previous = "";
+  for (let i = 0; i < 40; i++) {
+    await waitIdle(page);
+    await page.waitForTimeout(300);
+    const now = await page.evaluate(() => {
+      const map = window.__card._map;
+      const rect = window.__card._popup?.getElement()?.getBoundingClientRect();
+      return JSON.stringify([map.isMoving(), rect && [rect.left, rect.top, rect.right, rect.bottom]]);
+    });
+    if (now === previous && !JSON.parse(now)[0]) return;
+    previous = now;
+  }
+  throw new Error("Popup kommt nicht zur Ruhe");
 }
 
 function expectInside(g, step) {
   const info = `${step}: ${JSON.stringify(g)}`;
   expect(g, info).not.toBeNull();
+  expect(g.covered, info).toEqual([]);
   expect(g.popup.left, info).toBeGreaterThanOrEqual(MARGIN - 1);
   expect(g.popup.top, info).toBeGreaterThanOrEqual(MARGIN - 1);
   expect(g.popup.right, info).toBeLessThanOrEqual(g.width - MARGIN + 1);
@@ -74,24 +111,61 @@ function expectInside(g, step) {
 
 for (const [label, size] of Object.entries(SIZES)) {
   test(`Popup bleibt in der Karte (${label} ${size.width}×${size.height})`, async ({ page }) => {
-    await openCard(page, { size, holdHistory: true, config: { latitude: 52.52, longitude: 13.4, zoom: 13, show_legend: false } });
+    await openCard(page, { size, holdHistory: true, config: { latitude: 52.52, longitude: 13.4, zoom: 13 } });
     const box = await page.locator(".ortsnetz-map").boundingBox();
+    // Protokoll der Verschiebungen und Nutzerbewegungen für Fehlermeldungen.
+    await page.evaluate(() => {
+      const map = window.__card._map;
+      const panBy = map.panBy.bind(map);
+      map.panBy = (offset, options) => { (window.__pans ||= []).push(offset); return panBy(offset, options); };
+      map.on("movestart", (event) => { if (event.originalEvent) (window.__pans ||= []).push(`Nutzer:${event.originalEvent.type}`); });
+    });
     for (const [where, position] of Object.entries(POSITIONS)) {
-      await page.evaluate(() => window.__card._popup?.remove());
+      await page.evaluate(() => { window.__card._popup?.remove(); window.__pans = []; });
       await page.evaluate(() => { window.__historyReleased = new Promise((resolve) => { window.__releaseHistory = resolve; }); });
       const [x, y] = position(size.width, size.height);
       await placePoint(page, [x, y]);
       await page.mouse.click(box.x + x, box.y + y);
       await page.waitForFunction(() => window.__card._popup?.getElement()?.isConnected);
-      await waitIdle(page);
-      expectInside(await geometry(page), `${where}, vor dem Verlauf`);
+      await settle(page);
+      const before = await geometry(page);
+      expectInside(before, `${where}, vor dem Verlauf`);
 
       await page.evaluate(() => window.__releaseHistory());
       await page.waitForFunction(() => window.__card._popup.getElement().querySelector(".popup-charts svg"));
-      await waitIdle(page);
+      await settle(page);
       const after = await geometry(page);
       expect(after.charts).toBe(true);
       expectInside(after, `${where}, nach dem Verlauf`);
+      // Keine Layout-Sprünge: die Ankerseite bleibt beim Wachsen gleich.
+      expect(after.anchor, where).toBe(before.anchor);
     }
   });
 }
+
+test("Hat der Nutzer die Karte bewegt, verschiebt die Card sie nicht mehr", async ({ page }) => {
+  const size = SIZES.klein;
+  await openCard(page, { size, holdHistory: true, config: { latitude: 52.52, longitude: 13.4, zoom: 13, show_legend: false } });
+  const box = await page.locator(".ortsnetz-map").boundingBox();
+  // Punkt oben: nach dem Verlauf wäre eine Verschiebung nötig.
+  const [x, y] = POSITIONS.oben(size.width, size.height);
+  await placePoint(page, [x, y]);
+  await page.mouse.click(box.x + x, box.y + y);
+  await page.waitForFunction(() => window.__card._popup?.getElement()?.isConnected);
+  await settle(page);
+
+  // Nutzer zieht die Karte neben dem Popup ein Stück nach oben.
+  await page.mouse.move(box.x + size.width - 15, box.y + 200);
+  await page.mouse.down();
+  await page.mouse.move(box.x + size.width - 15, box.y + 150, { steps: 5 });
+  await page.mouse.up();
+  await settle(page);
+  const center = await page.evaluate(() => window.__card._map.getCenter().toArray());
+
+  await page.evaluate(() => window.__releaseHistory());
+  await page.waitForFunction(() => window.__card._popup.getElement().querySelector(".popup-charts svg"));
+  await settle(page);
+  const state = await page.evaluate(() => ({ center: window.__card._map.getCenter().toArray(), userMoved: window.__card._popupUserMoved }));
+  expect(state.userMoved).toBe(true);
+  expect(state.center).toEqual(center);
+});
