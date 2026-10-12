@@ -86,6 +86,29 @@ const DEFAULT_CONFIG = {
   debug: false,
 };
 
+// Eingaben der Konfiguration: Zahlenbereiche [min, max].
+const CONFIG_RANGES = { zoom: [1, 19], refresh_interval: [60, 3600], latitude: [-90, 90], longitude: [-180, 180] };
+
+// Vollständige, bereinigte Konfiguration der Card (Standardwerte ergänzt).
+function normalizeConfig(config) {
+  const merged = { ...DEFAULT_CONFIG, ...config };
+  merged.zoom = clamp(merged.zoom, 1, 19, 10);
+  merged.refresh_interval = clamp(merged.refresh_interval, 60, 3600, 300);
+  merged.phase = ["auto", "L1", "L2", "L3"].includes(String(merged.phase)) ? String(merged.phase) : "auto";
+  merged.show_status = merged.show_status !== false;
+  merged.show_legend = merged.show_legend !== false;
+  merged.debug = merged.debug === true;
+  merged.cooperative_gestures = merged.cooperative_gestures !== false;
+  for (const key of ["latitude", "longitude"]) {
+    const value = toNumber(merged[key]);
+    if (value === null) delete merged[key];
+    else merged[key] = value;
+  }
+  return merged;
+}
+
+const CONFIG_KEYS = [...Object.keys(DEFAULT_CONFIG), "latitude", "longitude"];
+
 // Hinweistexte der kooperativen Gesten (Schlüssel aus MapLibre 5.7.1).
 const COOPERATIVE_LOCALE = {
   "CooperativeGesturesHandler.WindowsHelpText": "Strg + Mausrad zum Zoomen der Karte",
@@ -300,20 +323,38 @@ class OrtsnetzMapCard extends HTMLElement {
     this._loadRequest = 0;
   }
 
+  // Home Assistant ruft setConfig bei jeder Bearbeitung im Editor auf: Karte nie neu
+  // aufbauen, sondern nur das Geänderte anpassen.
   setConfig(config) {
-    const merged = { ...DEFAULT_CONFIG, ...config };
-    merged.zoom = clamp(merged.zoom, 1, 19, 10);
-    merged.refresh_interval = clamp(merged.refresh_interval, 60, 3600, 300);
-    merged.phase = ["auto", "L1", "L2", "L3"].includes(String(merged.phase))
-      ? String(merged.phase)
-      : "auto";
-    merged.show_status = merged.show_status !== false;
-    merged.show_legend = merged.show_legend !== false;
-    merged.debug = merged.debug === true;
-    merged.cooperative_gestures = merged.cooperative_gestures !== false;
-    this._config = merged;
+    const previous = this._config;
+    this._config = normalizeConfig(config);
+    if (this._initialized) this._applyConfigChange(previous, this._config);
+  }
 
-    if (this._initialized && this.isConnected && this._hass) this._reinitialize();
+  _applyConfigChange(previous, next) {
+    const changed = (key) => JSON.stringify(previous[key]) !== JSON.stringify(next[key]);
+    if (!CONFIG_KEYS.some(changed)) return;
+    if (this._statusElement) this._statusElement.hidden = !next.show_status;
+    if (this._legendElement) {
+      this._legendElement.hidden = !next.show_legend;
+      this._renderLegend();
+    }
+    if (this._debugElement) this._debugElement.hidden = !next.debug;
+    const map = this._map;
+    if (!map) return;
+    if (next.debug) {
+      this._watchDebug();
+      this._updateDebug();
+    }
+    if (["zoom", "latitude", "longitude"].some(changed)) {
+      map.jumpTo({ center: this._initialCenter(), zoom: next.zoom });
+    }
+    if (changed("refresh_interval")) this._startRefreshTimer();
+    if (changed("phase")) this._renderPoints(this._currentData);
+    if (changed("cooperative_gestures")) {
+      if (next.cooperative_gestures) map.cooperativeGestures.enable();
+      else map.cooperativeGestures.disable();
+    }
   }
 
   set hass(hass) {
@@ -334,11 +375,6 @@ class OrtsnetzMapCard extends HTMLElement {
 
   disconnectedCallback() {
     this._destroy();
-  }
-
-  async _reinitialize() {
-    this._destroy(false);
-    await this._initialize();
   }
 
   _destroy(clearMarkup = true) {
@@ -372,6 +408,7 @@ class OrtsnetzMapCard extends HTMLElement {
     this._debugElement = null;
     this._legendElement = null;
     this._initialized = false;
+    this._debugWatched = false;
     clearTimeout(this._styleTimer);
     clearTimeout(this._problemTimer);
     this._problemTimer = null;
@@ -473,12 +510,20 @@ class OrtsnetzMapCard extends HTMLElement {
         style: dark ? OPENFREEMAP_DARK_STYLE : OPENFREEMAP_LIGHT_STYLE,
         center: this._initialCenter(),
         zoom: Number(this._config.zoom),
-        attributionControl: true,
+        // Kompakt: nur das (i), die Quellenangabe klappt auf. Mit eigenem Eintrag, sonst
+        // ließe MapLibre den MapLibre-Link weg und blendete die Angabe im Ersatzstil
+        // (ohne Quellen) ganz aus.
+        attributionControl: {
+          compact: true,
+          customAttribution: '<a href="https://maplibre.org/" target="_blank" rel="noopener">MapLibre</a>',
+        },
         // Kein Drehen oder Kippen: ohne Kompass ließe sich das nicht zurücksetzen.
         dragRotate: false,
         pitchWithRotate: false,
         touchPitch: false,
-        ...(this._config.cooperative_gestures ? { cooperativeGestures: true, locale: COOPERATIVE_LOCALE } : {}),
+        // Deutsche Hinweise immer, damit sie auch nach späterem Einschalten passen.
+        locale: COOPERATIVE_LOCALE,
+        ...(this._config.cooperative_gestures ? { cooperativeGestures: true } : {}),
       });
       this._map.touchZoomRotate.disableRotation();
       this._map.keyboard.disableRotation();
@@ -493,11 +538,7 @@ class OrtsnetzMapCard extends HTMLElement {
       // Kacheln ausbleiben. Gezeichnet wird, sobald ein Stil da ist (style.load).
       this._loadMeasurements();
 
-      const refreshSeconds = Math.max(60, Number(this._config.refresh_interval) || 300);
-      // Bedarfsgesteuert: nur abrufen, solange der Tab sichtbar ist.
-      this._refreshTimer = setInterval(() => {
-        if (!document.hidden) this._loadMeasurements();
-      }, refreshSeconds * 1000);
+      this._startRefreshTimer();
       document.addEventListener("visibilitychange", this._onVisibilityChange);
 
       this._updateMapSize();
@@ -512,6 +553,22 @@ class OrtsnetzMapCard extends HTMLElement {
       this._setStatus(`Fehler: ${error?.message || error}`);
       console.error("Ortsnetz Map initialization failed", error);
     }
+  }
+
+  // Bedarfsgesteuert: nur abrufen, solange der Tab sichtbar ist.
+  _startRefreshTimer() {
+    if (this._refreshTimer) clearInterval(this._refreshTimer);
+    const refreshSeconds = Math.max(60, Number(this._config.refresh_interval) || 300);
+    this._refreshTimer = setInterval(() => {
+      if (!document.hidden) this._loadMeasurements();
+    }, refreshSeconds * 1000);
+  }
+
+  // Diagnosezeile bei jedem idle aktualisieren; erst anmelden, wenn debug an ist.
+  _watchDebug() {
+    if (this._debugWatched || !this._map) return;
+    this._debugWatched = true;
+    this._map.on("idle", () => this._updateDebug());
   }
 
   // Kartengröße als CSS-Variablen für das Popup (Breite der Diagramme, maximale Höhe).
@@ -550,7 +607,7 @@ class OrtsnetzMapCard extends HTMLElement {
     this._map.on("sourcedata", (event) => {
       if (event?.tile && !this._fallbackActive && !this._isOwnSource(event.sourceId)) this._setMapProblem(null);
     });
-    if (this._config.debug) this._map.on("idle", () => this._updateDebug());
+    if (this._config.debug) this._watchDebug();
   }
 
   _isOwnSource(id) {
@@ -1361,7 +1418,8 @@ class OrtsnetzMapCardEditor extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
-    this._config = { ...DEFAULT_CONFIG };
+    // Konfiguration wie in der YAML (ohne ergänzte Standardwerte).
+    this._config = {};
     this._hass = null;
   }
 
@@ -1374,19 +1432,23 @@ class OrtsnetzMapCardEditor extends HTMLElement {
   }
 
   setConfig(config) {
-    const next = { ...DEFAULT_CONFIG, ...config };
+    const next = { ...config };
     const changed = JSON.stringify(next) !== JSON.stringify(this._config);
     this._config = next;
     if (changed || !this._rendered) this._render();
   }
-  _usesHaLocation() { return this._config.latitude == null || this._config.longitude == null; }
+
+  // Werte für die Anzeige: Standardwerte ergänzt.
+  get _view() { return normalizeConfig(this._config); }
+  _usesHaLocation() { return this._view.latitude === undefined || this._view.longitude === undefined; }
 
   _render() {
     if (!this.shadowRoot) return;
     this._rendered = true;
+    const view = this._view;
     const useHaLocation = this._usesHaLocation();
-    const lat = useHaLocation ? (this._hass?.config?.latitude ?? "") : this._config.latitude;
-    const lon = useHaLocation ? (this._hass?.config?.longitude ?? "") : this._config.longitude;
+    const lat = useHaLocation ? (this._hass?.config?.latitude ?? "") : view.latitude;
+    const lon = useHaLocation ? (this._hass?.config?.longitude ?? "") : view.longitude;
 
     this.shadowRoot.innerHTML = `
       <style>
@@ -1411,18 +1473,18 @@ class OrtsnetzMapCardEditor extends HTMLElement {
         <div class="section">
           <div class="section-title">Darstellung</div>
           <div class="grid">
-            <label class="field">Zoom<input data-key="zoom" type="number" min="1" max="19" step="1" value="${escapeHtml(this._config.zoom)}"></label>
+            <label class="field">Zoom<input data-key="zoom" type="number" min="1" max="19" step="1" value="${escapeHtml(view.zoom)}"></label>
             <label class="field">Phase für Markerfarbe<select data-key="phase">
-              <option value="auto" ${this._config.phase === "auto" ? "selected" : ""}>Alle Phasen (schlechtester Wert)</option>
-              <option value="L1" ${this._config.phase === "L1" ? "selected" : ""}>L1</option>
-              <option value="L2" ${this._config.phase === "L2" ? "selected" : ""}>L2</option>
-              <option value="L3" ${this._config.phase === "L3" ? "selected" : ""}>L3</option>
+              <option value="auto" ${view.phase === "auto" ? "selected" : ""}>Alle Phasen (schlechtester Wert)</option>
+              <option value="L1" ${view.phase === "L1" ? "selected" : ""}>L1</option>
+              <option value="L2" ${view.phase === "L2" ? "selected" : ""}>L2</option>
+              <option value="L3" ${view.phase === "L3" ? "selected" : ""}>L3</option>
             </select></label>
-            <label class="field">Aktualisierung<div class="value-row"><input data-key="refresh_interval" type="number" min="60" max="3600" step="60" value="${escapeHtml(this._config.refresh_interval)}"><span class="unit">s</span></div></label>
+            <label class="field">Aktualisierung<div class="value-row"><input data-key="refresh_interval" type="number" min="60" max="3600" step="60" value="${escapeHtml(view.refresh_interval)}"><span class="unit">s</span></div></label>
           </div>
-          <label class="check"><input data-key="show_status" type="checkbox" ${this._config.show_status !== false ? "checked" : ""}>Status unten links anzeigen</label>
-          <label class="check"><input data-key="show_legend" type="checkbox" ${this._config.show_legend !== false ? "checked" : ""}>Legende unten rechts anzeigen</label>
-          <label class="check"><input data-key="cooperative_gestures" type="checkbox" ${this._config.cooperative_gestures !== false ? "checked" : ""}>Zwei Finger zum Verschieben (Seite lässt sich über die Karte scrollen)</label>
+          <label class="check"><input data-key="show_status" type="checkbox" ${view.show_status ? "checked" : ""}>Status unten links anzeigen</label>
+          <label class="check"><input data-key="show_legend" type="checkbox" ${view.show_legend ? "checked" : ""}>Legende unten rechts anzeigen</label>
+          <label class="check"><input data-key="cooperative_gestures" type="checkbox" ${view.cooperative_gestures ? "checked" : ""}>Zwei Finger zum Verschieben (Seite lässt sich über die Karte scrollen)</label>
           <div class="hint">Angehakt bewegt ein Finger die Seite statt der Karte; die Karte verschiebt und zoomt man mit zwei Fingern, am Computer zoomt man mit Strg (Mac: ⌘) + Mausrad.</div>
           <div class="hint">Breite und Höhe werden ausschließlich über Home Assistants Tab „Layout“ eingestellt. Die Karte füllt den dort zugewiesenen Bereich automatisch vollständig aus.</div>
         </div>
@@ -1442,11 +1504,17 @@ class OrtsnetzMapCardEditor extends HTMLElement {
     });
   }
 
+  // Nur geänderte, gültige Werte schreiben; Standardwerte entfallen aus der YAML.
   _valueChanged(event) {
     const target = event.currentTarget;
     const key = target.dataset.key;
     if (!key) return;
     const next = { ...this._config };
+    const setValue = (name, value) => {
+      if (value === DEFAULT_CONFIG[name]) delete next[name];
+      else next[name] = value;
+    };
+    let rerender = key === "use_ha_location";
 
     if (key === "use_ha_location") {
       if (target.checked) {
@@ -1457,18 +1525,33 @@ class OrtsnetzMapCardEditor extends HTMLElement {
         next.longitude = Number(this._hass?.config?.longitude ?? 0);
       }
     } else if (["show_status", "show_legend", "cooperative_gestures"].includes(key)) {
-      next[key] = target.checked;
-    } else if (["zoom", "refresh_interval", "latitude", "longitude"].includes(key)) {
-      next[key] = Number(target.value);
+      setValue(key, target.checked);
+    } else if (key in CONFIG_RANGES) {
+      const number = String(target.value).trim() === "" ? null : toNumber(target.value);
+      if (number === null) {
+        // Koordinaten: ungültige Eingabe verwerfen; Zoom/Intervall: zurück zum Standard.
+        if (key === "latitude" || key === "longitude") {
+          this._render();
+          return;
+        }
+        delete next[key];
+      } else {
+        const [min, max] = CONFIG_RANGES[key];
+        let value = Math.min(max, Math.max(min, number));
+        if (key === "refresh_interval") value = Math.round(value);
+        setValue(key, value);
+        rerender = value !== number;
+      }
     } else {
-      next[key] = target.value;
+      setValue(key, target.value);
     }
 
     this._config = next;
     this.dispatchEvent(new CustomEvent("config-changed", {
       detail: { config: next }, bubbles: true, composed: true,
     }));
-    if (key === "use_ha_location") this._render();
+    // Geklemmte Werte und den Standort-Bereich neu anzeigen.
+    if (rerender) this._render();
   }
 }
 
