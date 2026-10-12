@@ -47,6 +47,8 @@ for (const [label, size] of Object.entries(SIZES)) {
       await openCard(page, { size, config: { latitude: 48.14, longitude: 11.58, zoom: 12 } });
       const box = await page.locator(".ortsnetz-map").boundingBox();
       await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      // Kooperative Gesten (Standard): Zoomen mit dem Mausrad nur mit Strg.
+      await page.keyboard.down("Control");
       for (let round = 0; round < 2; round++) {
         for (let i = 0; i < 6; i++) {
           await page.mouse.wheel(0, 300);

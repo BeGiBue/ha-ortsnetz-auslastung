@@ -12,6 +12,8 @@ Der Browser ruft die externe API nicht direkt auf, CORS ist kein Problem. Die Me
 
 - Standorte in der Nähe werden bis Zoom 11 zu Clustern zusammengefasst (MapLibre-Clustering), ab Zoom 12 erscheinen alle Einzelpunkte. Ein Cluster zeigt die Anzahl seiner Standorte und hat die Farbe des schlechtesten enthaltenen Status. Ein Klick zoomt so weit hinein, dass er sich aufteilt. (Tortendiagramme mit den Statusanteilen folgen in 2.1.0.)
 - Punkte und Cluster lassen sich auch auf Touch-Geräten treffen: Tippen bis 10 px daneben genügt.
+- Kooperative Gesten (abschaltbar): Ein Finger scrollt die Seite, zwei Finger bewegen die Karte, am Computer zoomt Strg (Mac: ⌘) + Mausrad. Die Karte lässt sich nicht drehen oder kippen.
+- Schlägt ein Abruf fehl, versucht die Card es nach 15, 30 und 60 Sekunden erneut und zeigt bis dahin den letzten Stand.
 - Markerfarbe nach dem schlechtesten Wert aller gemessenen Phasen (Unterspannung hat bei gleicher Schwere Vorrang). Nicht gemessene Phasen werden ignoriert. Schwellwerte und Farben kommen aus der API.
 - Markergröße nach dem erwarteten PV-Ertrag in kWh/kWp/Tag (0–10), sofern ein Forecast vorliegt.
 - Einklappbare Legende mit den Messungen der letzten 24 Stunden je Status; Häkchen blenden einzelne Status aus.
@@ -63,6 +65,7 @@ type: custom:ortsnetz-map-card
 | `refresh_interval` | 300 | Aktualisierung in Sekunden (60–3600), nur bei sichtbarem Tab |
 | `show_status` | `true` | Statusanzeige unten links |
 | `show_legend` | `true` | Legende unten rechts |
+| `cooperative_gestures` | `true` | Ein Finger scrollt die Seite, zwei Finger bewegen die Karte, Strg/⌘ + Mausrad zoomt. `false`: Karte reagiert auf einen Finger und das Mausrad ohne Taste |
 | `latitude`, `longitude` | HA-Standort | Eigener Kartenmittelpunkt; ungültige Werte fallen auf den HA-Standort zurück |
 | `debug` | `false` | Diagnosezeile oben links: Zoom, gesetzte Punkte, sichtbare Cluster (mit Summe ihrer Punkte) und Einzelpunkte. Hilft bei Fehlerberichten per Screenshot |
 

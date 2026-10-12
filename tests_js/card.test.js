@@ -24,6 +24,8 @@ class FakeMap {
     this.autoStyleLoaded = null; // fester Wert für isStyleLoaded(), sonst null
     this.renderedFeatures = [];
     this.clusterExpansionZoom = 14;
+    this.touchZoomRotate = { rotationDisabled: false, disableRotation() { this.rotationDisabled = true; } };
+    this.keyboard = { rotationDisabled: false, disableRotation() { this.rotationDisabled = true; } };
     maps.push(this);
   }
   on(event, ...args) {
@@ -698,6 +700,160 @@ describe("Abruf der Messwerte", () => {
       await card._loadMeasurements();
       expect(card._statusElement.textContent).toBe(text);
     }
+  });
+});
+
+// ---- Touch-Bedienung --------------------------------------------------------------
+
+describe("Touch-Bedienung", () => {
+  async function mapFor(config) {
+    window.maplibregl = fakeMapLibre;
+    const card = newCard();
+    card.setConfig(config);
+    card.hass = makeHass();
+    document.body.appendChild(card);
+    await flush();
+    return maps[0];
+  }
+
+  it("sperrt Drehen und Kippen", async () => {
+    const map = await mapFor({});
+    expect(map.options).toMatchObject({ dragRotate: false, pitchWithRotate: false, touchPitch: false });
+    expect(map.touchZoomRotate.rotationDisabled).toBe(true);
+    expect(map.keyboard.rotationDisabled).toBe(true);
+  });
+
+  it("nutzt standardmäßig kooperative Gesten mit deutschen Hinweisen", async () => {
+    const map = await mapFor({});
+    expect(map.options.cooperativeGestures).toBe(true);
+    expect(map.options.locale).toEqual({
+      "CooperativeGesturesHandler.WindowsHelpText": "Strg + Mausrad zum Zoomen der Karte",
+      "CooperativeGesturesHandler.MacHelpText": "⌘ + Mausrad zum Zoomen der Karte",
+      "CooperativeGesturesHandler.MobileHelpText": "Karte mit zwei Fingern bewegen",
+    });
+  });
+
+  it("verzichtet mit cooperative_gestures: false darauf, Drehen bleibt gesperrt", async () => {
+    const map = await mapFor({ cooperative_gestures: false });
+    expect(map.options.cooperativeGestures).toBeFalsy();
+    expect(map.options.dragRotate).toBe(false);
+    expect(map.touchZoomRotate.rotationDisabled).toBe(true);
+  });
+
+  it("schlägt die Option im Kartenpicker vor", () => {
+    expect(customElements.get("ortsnetz-map-card").getStubConfig().cooperative_gestures).toBe(true);
+  });
+
+  it("zeigt im Editor eine angehakte Checkbox und schreibt false beim Abwählen", () => {
+    const editor = document.createElement("ortsnetz-map-card-editor");
+    editor.setConfig({});
+    editor.hass = makeHass();
+    const box = editor.shadowRoot.querySelector('[data-key="cooperative_gestures"]');
+    expect(box.checked).toBe(true);
+    expect(box.closest("label").textContent).toContain("Zwei Finger zum Verschieben");
+    const events = [];
+    editor.addEventListener("config-changed", (event) => events.push(event.detail.config));
+    box.checked = false;
+    box.dispatchEvent(new Event("change"));
+    expect(events.at(-1).cooperative_gestures).toBe(false);
+  });
+});
+
+// ---- Fehlerverhalten beim Abruf -------------------------------------------------------
+
+describe("Abruf nach Fehlern", () => {
+  let handlers;
+  let calls;
+  let answers;
+
+  async function mounted() {
+    handlers = {};
+    calls = 0;
+    const connection = {
+      sendMessagePromise: vi.fn(() => {
+        calls += 1;
+        const answer = answers.shift() ?? "fail";
+        return answer === "fail" ? Promise.reject({ code: "other" }) : Promise.resolve(answer);
+      }),
+      addEventListener: vi.fn((type, handler) => { (handlers[type] ||= []).push(handler); }),
+      removeEventListener: vi.fn((type, handler) => { handlers[type] = (handlers[type] || []).filter((h) => h !== handler); }),
+    };
+    window.maplibregl = fakeMapLibre;
+    const card = newCard();
+    card.hass = makeHass({ connection });
+    document.body.appendChild(card);
+    await vi.advanceTimersByTimeAsync(0);
+    return { card, connection };
+  }
+  const status = (card) => card.querySelector(".ortsnetz-status").textContent;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  it("versucht es nach 15, 30 und 60 s erneut, danach nur im normalen Intervall", async () => {
+    answers = [];
+    await mounted();
+    expect(calls).toBe(1);
+    await vi.advanceTimersByTimeAsync(14000);
+    expect(calls).toBe(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(calls).toBe(2);
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(calls).toBe(3);
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(calls).toBe(4);
+    // Keine weitere Wiederholung, erst das Intervall (300 s ab Start).
+    await vi.advanceTimersByTimeAsync(180000);
+    expect(calls).toBe(4);
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(calls).toBe(5);
+  });
+
+  it("wiederholt nicht bei verborgenem Tab", async () => {
+    answers = [];
+    await mounted();
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+    try {
+      await vi.advanceTimersByTimeAsync(16000);
+      expect(calls).toBe(1);
+    } finally {
+      delete document.hidden;
+    }
+  });
+
+  it("zeigt „Lade …“ nur beim ersten Laden und bei Fehlern den letzten Stand", async () => {
+    vi.setSystemTime(new Date("2026-10-12T09:40:00"));
+    answers = [{ points: [{ public_id: "a" }] }];
+    const { card } = await mounted();
+    expect(status(card)).toBe("1 Messpunkte · 09:40");
+    vi.setSystemTime(new Date("2026-10-12T09:45:00"));
+    const loading = card._loadMeasurements();
+    expect(status(card)).toBe("1 Messpunkte · 09:40");
+    await loading;
+    expect(status(card)).toBe("Aktualisierung fehlgeschlagen, zeige Stand 09:40");
+    expect(card._currentData.points).toHaveLength(1);
+  });
+
+  it("setzt die Wiederholung nach Erfolg zurück", async () => {
+    answers = ["fail", { points: [] }];
+    await mounted();
+    await vi.advanceTimersByTimeAsync(15000);
+    expect(calls).toBe(2);
+    await vi.advanceTimersByTimeAsync(100000);
+    expect(calls).toBe(2);
+  });
+
+  it("ruft nach Wiederverbindung des WebSockets sofort ab und meldet sich beim Entfernen ab", async () => {
+    answers = [{ points: [] }, { points: [] }];
+    const { card, connection } = await mounted();
+    expect(connection.addEventListener).toHaveBeenCalledWith("ready", expect.any(Function));
+    handlers.ready.forEach((handler) => handler());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls).toBe(2);
+    card.remove();
+    expect(handlers.ready).toHaveLength(0);
   });
 });
 
