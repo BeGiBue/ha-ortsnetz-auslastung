@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.0.2 (in Arbeit)
+## 2.0.2-beta.1 (Vorabversion)
 
 Card:
 - Fix: Das Popup eines Messpunkts lag teilweise außerhalb der Karte, vor allem nachdem der 24-Stunden-Verlauf nachgeladen war, und war ohne Verschieben der Karte nicht ganz zu sehen. Jetzt:
@@ -9,6 +9,11 @@ Card:
   - Nach dem Öffnen und nach dem Nachladen des Verlaufs verschiebt die Card die Karte, bis das Popup mit 12 px Rand sichtbar ist, nur wenn nötig und nie so weit, dass der angetippte Punkt aus dem Bild läuft. Hat man die Karte nach dem Öffnen selbst bewegt, wird nicht mehr verschoben.
   - Feste Ankerseite (in der oberen Kartenhälfte unter dem Punkt, sonst darüber), damit das Popup beim Wachsen nicht springt.
   - Das Popup liegt über Legende, Statuszeile und Zoom-Schaltflächen statt darunter.
+- Fix: War der Kartenhintergrund nicht erreichbar (`tiles.openfreemap.org` gesperrt, z. B. per Pi-hole, offline oder App ohne Internet), blieb die Karte leer mit „Lade Messwerte …“. Ursache: Der Datenabruf wartete auf das MapLibre-Ereignis `load`, das nur bei erfolgreich geladenem Stil und Kacheln kommt. Jetzt:
+  - Die Messwerte werden direkt nach dem Kartenaufbau abgerufen und gezeichnet, sobald ein Stil da ist.
+  - Lädt der Stil nicht (Fehler oder nach 10 Sekunden), zeigt die Karte Punkte und Cluster auf einem neutralen Hintergrund (hell bzw. dunkel, ohne Zahl im Cluster). Der nächste Wechsel zwischen hellem und dunklem Theme versucht wieder den echten Stil.
+  - Die Statuszeile erklärt das Problem in einer zweiten Zeile („Kartenhintergrund nicht erreichbar (tiles.openfreemap.org)“), entprellt und ohne Konsolenmeldung je Kachel. Lädt wieder eine Kachel, verschwindet der Hinweis.
+- Fix: Beim Wechsel zwischen hellem und dunklem Theme konnte MapLibre den neuen Stil per Diff übernehmen, ohne dass die Card fehlende Layer ergänzte (z. B. die Zahl im Cluster, wenn nur der neue Stil Schriften hat). Der Stil wird jetzt immer vollständig neu geladen.
 
 ## 2.0.1
 

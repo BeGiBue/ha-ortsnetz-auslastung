@@ -1,6 +1,6 @@
 # Ortsnetz Map
 
-**Version 2.0.1**
+**Version 2.0.2-beta.1**
 
 Home-Assistant-Integration mit Dashboard-Karte für die öffentlichen Messpunkte von [ortsnetz-auslastung.de](https://www.ortsnetz-auslastung.de/). Die Integration lädt die Daten serverseitig, speichert sie bedarfsgesteuert zwischen und liefert gleich die passende Karte mit. Backend und Card sind hier in **einem** HACS-Repository zusammengeführt.
 
@@ -104,7 +104,7 @@ Ortsnetz Map Card
 - [MapLibre GL JS](https://maplibre.org/) 5.7.1 (BSD-3-Clause, Lizenz in `custom_components/ortsnetz_map/www/maplibre/LICENSE.txt`), wird mit der Integration ausgeliefert und von Home Assistant bereitgestellt
 - [OpenFreeMap](https://openfreemap.org/)-Vektorkarten (Stile „Liberty“ und „Dark“) auf Basis von OpenStreetMap-Daten, geladen von `tiles.openfreemap.org`
 
-Der Browser muss `tiles.openfreemap.org` erreichen können; ein externes CDN für MapLibre ist nicht mehr nötig. Die Messdaten selbst laufen ausschließlich über Home Assistant.
+Der Browser muss `tiles.openfreemap.org` erreichen können; ein externes CDN für MapLibre ist nicht mehr nötig. Die Messdaten selbst laufen ausschließlich über Home Assistant. Ist der Kartenhintergrund nicht erreichbar (z. B. durch einen Werbeblocker wie Pi-hole oder ohne Internet), zeigt die Karte die Messpunkte auf einem neutralen Hintergrund und nennt das Problem in der Statuszeile.
 
 ## Entwicklung
 
