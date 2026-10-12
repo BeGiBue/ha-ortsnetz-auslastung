@@ -10,7 +10,7 @@ Der Browser ruft die externe API nicht direkt auf, CORS ist kein Problem. Die Me
 
 **Karte**
 
-- Standorte in der Nähe werden bis Zoom 11 zu Clustern zusammengefasst (MapLibre-Clustering), ab Zoom 12 erscheinen alle Einzelpunkte. Ein Cluster ist ein Tortendiagramm mit den Anteilen der Status und der Anzahl seiner Standorte; ein Klick (oder Enter, wenn der Cluster per Tab ausgewählt ist) zoomt so weit hinein, dass er sich aufteilt.
+- Standorte in der Nähe werden bis Zoom 11 zu Clustern zusammengefasst (MapLibre-Clustering), ab Zoom 12 erscheinen alle Einzelpunkte. Ein Cluster ist ein Tortendiagramm mit den Anteilen der Status und der Anzahl seiner Standorte; ein Klick, Antippen oder Enter/Leertaste (Cluster per Tab ausgewählt) zoomt so weit hinein, dass er sich aufteilt. Die Torten sind für Screenreader beschriftet, z. B. „Cluster mit 12 Messpunkten: 5 unter 207 V, 7 218 – 242 V“.
 - Punkte und Cluster lassen sich auch auf Touch-Geräten treffen: Tippen bis 10 px daneben genügt.
 - Kooperative Gesten (abschaltbar): Ein Finger scrollt die Seite, zwei Finger bewegen die Karte, am Computer zoomt Strg (Mac: ⌘) + Mausrad. Die Karte lässt sich nicht drehen oder kippen.
 - Schlägt ein Abruf fehl, versucht die Card es nach 15, 30 und 60 Sekunden erneut und zeigt bis dahin den letzten Stand.
@@ -107,7 +107,7 @@ Ortsnetz Map Card
 - [MapLibre GL JS](https://maplibre.org/) 5.7.1 (BSD-3-Clause, Lizenz in `custom_components/ortsnetz_map/www/maplibre/LICENSE.txt`), wird mit der Integration ausgeliefert und von Home Assistant bereitgestellt
 - [OpenFreeMap](https://openfreemap.org/)-Vektorkarten (Stile „Liberty“ und „Dark“) auf Basis von OpenStreetMap-Daten, geladen von `tiles.openfreemap.org`
 
-Der Browser muss `tiles.openfreemap.org` erreichen können; ein externes CDN für MapLibre ist nicht mehr nötig. Die Messdaten selbst laufen ausschließlich über Home Assistant. Ist der Kartenhintergrund nicht erreichbar (z. B. durch einen Werbeblocker wie Pi-hole oder ohne Internet), zeigt die Karte die Messpunkte auf einem neutralen Hintergrund und nennt das Problem in der Statuszeile.
+Der Browser muss `tiles.openfreemap.org` erreichen können; ein externes CDN für MapLibre ist nicht mehr nötig. Die Messdaten selbst laufen ausschließlich über Home Assistant. Ist der Kartenhintergrund nicht erreichbar (z. B. durch einen Werbeblocker wie Pi-hole oder ohne Internet), zeigt die Karte Messpunkte und Tortendiagramme (mit Anzahl) auf einem neutralen Hintergrund und nennt das Problem in der Statuszeile. Lädt wieder eine Kachel, verschwindet der Hinweis; der nächste Wechsel zwischen hellem und dunklem Theme versucht wieder den echten Kartenstil.
 
 ## Entwicklung
 
@@ -119,7 +119,25 @@ npm run test:browser                            # Karte im echten Browser (Chrom
 python -m pytest -q                             # Backend (requirements_test.txt)
 ```
 
-Die Browser-Tests laufen ohne Netz: MapLibre aus dem Repository, ein Minimalstil statt OpenFreeMap und 700 erzeugte Messpunkte. Sie prüfen nach jedem Zoomen und Schwenken, dass jeder angezeigte Status-Punkt im Blickfeld genau einmal sichtbar ist (als Einzelpunkt oder in einem Cluster).
+Die Browser-Tests laufen ohne Netz: MapLibre aus dem Repository, ein Minimalstil statt OpenFreeMap und 700 erzeugte Messpunkte. Sie prüfen in Chromium und WebKit (Safari-Engine):
+
+| Datei | Inhalt |
+|---|---|
+| `clusters.spec.js` | Nach jedem Zoomen und Schwenken ist jeder angezeigte Status-Punkt im Blickfeld genau einmal sichtbar (als Einzelpunkt oder in einem Cluster); Zähler je Status, Legendenfilter, Theme-Wechsel, Diagnosezeile, Klick und Tipp mit Toleranz |
+| `pies.spec.js` | Torten sitzen auf ihren Clustern (auch während einer Bewegung), stimmen mit den Zählern überein, reagieren auf Klick und Tastatur und kommen nach dem Theme-Wechsel wieder |
+| `popup.spec.js` | Popup bleibt vollständig in der Karte, auch nach dem Nachladen des Verlaufs; hat man die Karte selbst bewegt, verschiebt die Card sie nicht mehr |
+| `basemap.spec.js` | Stil oder Kacheln nicht erreichbar: Daten trotzdem sichtbar, Hinweis in der Statuszeile, Rückkehr zum echten Stil |
+| `touch.spec.js` | Kooperative Gesten, kein Drehen und Kippen, Antippen von Clustern und Punkten |
+| `config.spec.js` | Konfigurationsänderung ohne Neuaufbau, Quellenangabe sichtbar und nicht von Legende oder Status verdeckt |
+
+Die Tests prüfen die Browser-Engines, nicht ein echtes iPad, die Companion-App oder die echten OpenFreeMap-Stile; das bleibt Handarbeit vor einem Release.
+
+### Release
+
+`main` ist gegen direkte Pushes geschützt. Deshalb:
+
+1. Version per Pull Request setzen: `VERSION`, `version` in `manifest.json` und die erste Zeile der Card (`// Ortsnetz Map Card vX.Y.Z`) gleich; dazu `CHANGELOG.md`, die Versionszeile in dieser README und `RELEASE_NOTES_X.Y.Z.md`.
+2. Nach dem Merge **Actions → Release veröffentlichen → Run workflow** auf `main` mit der Version ohne `v` starten. Der Workflow testet, prüft die Versionen, setzt den Tag `vX.Y.Z` und legt das GitHub-Release mit den Release Notes an. Versionen mit Bindestrich (z. B. `2.1.0-beta.1`) werden als Vorabversion veröffentlicht.
 
 ## Voraussetzungen
 
