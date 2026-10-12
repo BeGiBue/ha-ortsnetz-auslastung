@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.1.0
+
+Stabile Version; entspricht 2.1.0-beta.1 (Cluster als Tortendiagramme, siehe unten), auf iPad und in der Companion-App geprüft.
+
 ## 2.1.0-beta.1 (Vorabversion)
 
 Card:
