@@ -1,8 +1,20 @@
 # Changelog
 
-## Unveröffentlicht
+## 2.0.1
 
-Test- und Diagnosegrundlage (Phase 0), keine Änderung am Verhalten der Karte:
+Behebt das Verschwinden von Punkten beim Herauszoomen (Companion-App, Safari auf dem iPad, aber auch Desktop-Browser).
+
+Card:
+- Cluster berechnet jetzt MapLibre selbst (`cluster: true`, Radius 45 px, zusammengefasst bis Zoom 11, ab Zoom 12 Einzelpunkte). Cluster sind vorerst einfarbige Kreise mit Anzahl, gefärbt nach dem schlechtesten enthaltenen Status (bei gleicher Schwere Unterspannung). Die Tortendiagramme kommen in 2.1.0 zurück; die Zähler je Status liegen dafür schon in den Clustern.
+- Die eigene Cluster-Berechnung mit HTML-Markern entfällt und mit ihr die drei unten beschriebenen Fehler.
+- Die Anzahl im Cluster nutzt die Schrift „Noto Sans Regular“ der OpenFreeMap-Stile und hängt an einer eigenen Quelle: Ist die Schrift nicht ladbar, fehlt nur die Zahl, Cluster und Einzelpunkte bleiben sichtbar. Stile ohne Glyphen erhalten Cluster ohne Zahl.
+- Rendern hängt nicht mehr an `isStyleLoaded()`: Daten werden immer gemerkt und gezeichnet, sobald die Karte einen Stil hat; Quelle und Layer werden bei `style.load` (Start und Theme-Wechsel) bei Bedarf neu angelegt. `setData` nur noch, wenn sich die Daten geändert haben.
+- Theme-Wechsel übernimmt alle eigenen Quellen und Layer in ihrer Reihenfolge.
+- Klick auf einen Cluster zoomt so weit hinein, dass er sich aufteilt. Punkte und Cluster reagieren mit einem Treffbereich von 10 px um den Tippunkt (Touch).
+- Ungültige Koordinaten (leer, Text, außerhalb des Wertebereichs, 0/0) werden übersprungen, auch beim Kartenmittelpunkt der Konfiguration (Rückfall auf den Home-Assistant-Standort).
+- Diagnosezeile (`debug: true`) zeigt zusätzlich die Summe der Punkte in sichtbaren Clustern.
+
+Test- und Diagnosegrundlage:
 
 - Neue Option `debug: true` (Standard aus): Diagnosezeile oben links mit Zoom, gesetzten Punkten, Clustern und sichtbaren Einzelpunkten, z. B. für Screenshots vom iPad.
 - Browser-Tests mit Playwright in Chromium und WebKit (`npm run test:browser`, eigener CI-Job): Karte mit lokal gebündeltem MapLibre, Minimalstil ohne Netz und 700 erzeugten Punkten; die Card liegt wie in Home Assistant in einem Shadow-Root. Invariante: Nach jedem Zoomen und Schwenken wird jeder aktivierte Punkt im Blickfeld genau einmal dargestellt, als Einzelpunkt oder in einem sichtbar platzierten Cluster.
@@ -10,7 +22,7 @@ Test- und Diagnosegrundlage (Phase 0), keine Änderung am Verhalten der Karte:
   1. Die Cluster-Marker erhielten über `.ortsnetz-cluster { position:relative }` keine absolute Positionierung mehr (die Regel der Card überschreibt `.maplibregl-marker { position:absolute }`). Die Marker lagen im normalen Fluss untereinander: nur der erste saß richtig, jeder weitere war um die Höhe der vorherigen nach unten verschoben und wurde meist vom Kartenrand abgeschnitten. Das betrifft jede Ansicht unter Zoom 12 dauerhaft.
   2. Marker wurden nur im Sichtbereich plus 15 % Rand angelegt; in kleinen Karten ist der Rand schmaler als ein Cluster, Randpunkte fehlten bis zur nächsten Bewegung.
   3. Trafen die Daten ein, während Kartenkacheln luden (`isStyleLoaded()` false), verwarf `_renderPoints` sie still; die Karte blieb bis zum nächsten Abruf leer.
-  Die Browser-Tests markieren diese Fehler für den alten Pfad als erwartet fehlschlagend.
+  Mit dem MapLibre-Clustering bestehen die Browser-Tests in Chromium und WebKit. Einzige erlaubte Ausnahme der Invariante ist der Randeffekt jedes Schwerpunkt-Clusterings: ein Punkt knapp im Blickfeld, dessen Cluster-Kreis vollständig außerhalb liegt.
 
 ## 2.0.0
 

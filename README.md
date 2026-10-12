@@ -1,6 +1,6 @@
 # Ortsnetz Map
 
-**Version 2.0.0**
+**Version 2.0.1**
 
 Home-Assistant-Integration mit Dashboard-Karte für die öffentlichen Messpunkte von [ortsnetz-auslastung.de](https://www.ortsnetz-auslastung.de/). Die Integration lädt die Daten serverseitig, speichert sie bedarfsgesteuert zwischen und liefert gleich die passende Karte mit. Backend und Card sind hier in **einem** HACS-Repository zusammengeführt.
 
@@ -10,7 +10,8 @@ Der Browser ruft die externe API nicht direkt auf, CORS ist kein Problem. Die Me
 
 **Karte**
 
-- Standorte in der Nähe werden zu Clustern zusammengefasst; bei gemischten Status als Tortendiagramm. Ein Klick zoomt hinein.
+- Standorte in der Nähe werden bis Zoom 11 zu Clustern zusammengefasst (MapLibre-Clustering), ab Zoom 12 erscheinen alle Einzelpunkte. Ein Cluster zeigt die Anzahl seiner Standorte und hat die Farbe des schlechtesten enthaltenen Status. Ein Klick zoomt so weit hinein, dass er sich aufteilt. (Tortendiagramme mit den Statusanteilen folgen in 2.1.0.)
+- Punkte und Cluster lassen sich auch auf Touch-Geräten treffen: Tippen bis 10 px daneben genügt.
 - Markerfarbe nach dem schlechtesten Wert aller gemessenen Phasen (Unterspannung hat bei gleicher Schwere Vorrang). Nicht gemessene Phasen werden ignoriert. Schwellwerte und Farben kommen aus der API.
 - Markergröße nach dem erwarteten PV-Ertrag in kWh/kWp/Tag (0–10), sofern ein Forecast vorliegt.
 - Einklappbare Legende mit den Messungen der letzten 24 Stunden je Status; Häkchen blenden einzelne Status aus.
@@ -62,7 +63,8 @@ type: custom:ortsnetz-map-card
 | `refresh_interval` | 300 | Aktualisierung in Sekunden (60–3600), nur bei sichtbarem Tab |
 | `show_status` | `true` | Statusanzeige unten links |
 | `show_legend` | `true` | Legende unten rechts |
-| `latitude`, `longitude` | HA-Standort | Eigener Kartenmittelpunkt |
+| `latitude`, `longitude` | HA-Standort | Eigener Kartenmittelpunkt; ungültige Werte fallen auf den HA-Standort zurück |
+| `debug` | `false` | Diagnosezeile oben links: Zoom, gesetzte Punkte, sichtbare Cluster (mit Summe ihrer Punkte) und Einzelpunkte. Hilft bei Fehlerberichten per Screenshot |
 
 Breite und Höhe werden ausschließlich über den Tab **Layout** von Home Assistant eingestellt.
 
@@ -103,6 +105,18 @@ Ortsnetz Map Card
 - [OpenFreeMap](https://openfreemap.org/)-Vektorkarten (Stile „Liberty“ und „Dark“) auf Basis von OpenStreetMap-Daten, geladen von `tiles.openfreemap.org`
 
 Der Browser muss `tiles.openfreemap.org` erreichen können; ein externes CDN für MapLibre ist nicht mehr nötig. Die Messdaten selbst laufen ausschließlich über Home Assistant.
+
+## Entwicklung
+
+```bash
+npm ci
+npm test                                        # Card-Tests (vitest, jsdom)
+npx playwright install --with-deps webkit chromium
+npm run test:browser                            # Karte im echten Browser (Chromium und WebKit)
+python -m pytest -q                             # Backend (requirements_test.txt)
+```
+
+Die Browser-Tests laufen ohne Netz: MapLibre aus dem Repository, ein Minimalstil statt OpenFreeMap und 700 erzeugte Messpunkte. Sie prüfen nach jedem Zoomen und Schwenken, dass jeder angezeigte Status-Punkt im Blickfeld genau einmal sichtbar ist (als Einzelpunkt oder in einem Cluster).
 
 ## Voraussetzungen
 
