@@ -121,6 +121,9 @@ test("Antippen von Cluster und Punkt funktioniert mit kooperativen Gesten", asyn
   await expect(page.locator(".maplibregl-popup .popup-title")).toHaveText("Ortsnetz-Messpunkt");
 
   // Ein Finger im Popup wird von der Karte nicht abgefangen (der Inhalt darf scrollen).
+  // Erst abwarten, bis der Verlauf geladen ist und die Card das Popup ins Bild geschoben hat.
+  await page.waitForFunction(() => window.__card._popup?.getElement()?.querySelector(".popup-charts svg"));
+  await page.waitForTimeout(400);
   const before = await camera(page);
   const prevented = await gesture(page, steps([[200, 300]], [[200, 200]]), ".popup-scroll");
   expect(prevented).toBe(false);
