@@ -30,10 +30,10 @@ Der Browser ruft die externe API nicht direkt auf, CORS ist kein Problem. Die Me
 
 ## Installation über HACS
 
-[![Open your Home Assistant instance and open this repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=BeGiBue&repository=ha-ortsnetz-auslastung&category=integration)
+[![Open your Home Assistant instance and open this repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=BeGiBue&repository=home-assistant-ortsnetz-auslastung&category=integration)
 
 1. In HACS **Benutzerdefinierte Repositories** öffnen.
-2. `https://github.com/BeGiBue/ha-ortsnetz-auslastung` hinzufügen, Typ **Integration**.
+2. `https://github.com/BeGiBue/home-assistant-ortsnetz-auslastung` hinzufügen, Typ **Integration**.
 3. **Ortsnetz Map** installieren (für Vorabversionen **⋮ → Beta-Versionen anzeigen**).
 4. Home Assistant neu starten.
 5. **Einstellungen → Geräte & Dienste → Integration hinzufügen → Ortsnetz Map**.
