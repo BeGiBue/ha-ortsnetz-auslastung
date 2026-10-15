@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/BeGiBue/home-assistant-ortsnetz-auslastung/main/brand/icon.png?v=2" alt="Ortsnetz Map" width="160">
+</p>
+
 # Ortsnetz Map
 
 **Version 2.1.0**
