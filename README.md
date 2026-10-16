@@ -10,6 +10,12 @@ Home-Assistant-Integration mit Dashboard-Karte für die öffentlichen Messpunkte
 
 Der Browser ruft die externe API nicht direkt auf, CORS ist kein Problem. Die Messdaten laufen ausschließlich über Home Assistant.
 
+## Vorschau
+
+**Normalbetrieb – breit (800 px)**
+
+<img src="docs/assets/ortsnetz-normal-800-light.png" width="800" alt="Ortsnetz Map: Deutschland-Übersicht mit Messpunkten, Clustern und geöffneter Legende, 800 px Kartenbreite, helles Theme">
+
 ## Funktionen
 
 **Karte**
