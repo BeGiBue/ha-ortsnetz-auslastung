@@ -4,7 +4,7 @@
 
 # Ortsnetz Map
 
-**Version 2.1.0**
+**Version 2.1.1**
 
 Home-Assistant-Integration mit Dashboard-Karte für die öffentlichen Messpunkte von [ortsnetz-auslastung.de](https://www.ortsnetz-auslastung.de/). Die Integration lädt die Daten serverseitig, speichert sie bedarfsgesteuert zwischen und liefert gleich die passende Karte mit. Backend und Card sind hier in **einem** HACS-Repository zusammengeführt.
 
@@ -14,7 +14,7 @@ Der Browser ruft die externe API nicht direkt auf, CORS ist kein Problem. Die Me
 
 **Normalbetrieb – breit (800 px)**
 
-<img src="docs/assets/ortsnetz-normal-800-light.png" width="800" alt="Ortsnetz Map: Deutschland-Übersicht mit Messpunkten, Clustern und geöffneter Legende, 800 px Kartenbreite, helles Theme">
+<img src="https://raw.githubusercontent.com/BeGiBue/home-assistant-ortsnetz-auslastung/main/docs/assets/ortsnetz-normal-800-light.png" width="800" alt="Ortsnetz Map: Deutschland-Übersicht mit Messpunkten, Clustern und geöffneter Legende, 800 px Kartenbreite, helles Theme">
 
 ## Funktionen
 

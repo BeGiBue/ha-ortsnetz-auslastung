@@ -1,4 +1,4 @@
-// Ortsnetz Map Card v2.1.0
+// Ortsnetz Map Card v2.1.1
 // MapLibre GL wird von der Integration selbst ausgeliefert (kein externes CDN).
 const MAPLIBRE_VERSION = "5.7.1";
 const MAPLIBRE_BASE = "/ortsnetz_map/maplibre";
