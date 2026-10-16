@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.1
+
+- Neue, im Browser erstellte Vorschauen aus dem unveränderten Original-Code in der README.
+- Vorschau-Bilder über absolute Raw-URLs für die Anzeige in GitHub und HACS eingebunden.
+- Versionsangaben für das Patch-Release aktualisiert.
+
+Keine Änderungen an der Funktionsweise der Karte oder Integration.
+
 ## 2.1.0
 
 Stabile Version; entspricht 2.1.0-beta.1 (Cluster als Tortendiagramme, siehe unten), auf iPad und in der Companion-App geprüft.
